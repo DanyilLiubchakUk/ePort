@@ -1,13 +1,14 @@
 # ePort
 
-ePort is a local OpenAI-compatible proxy that routes IDE traffic (especially **Cursor**) through your paid **ChatGPT/Codex** and **Claude Max** subscriptions instead of metered API keys. It runs on macOS and Windows, exposes a public HTTPS endpoint via Cloudflare (required for Cursor), and supports dual-provider routing from a single Base URL — Codex models like `gpt-5.5` and Claude models like `opus-4.8max` in one setup.
+ePort is a local OpenAI-compatible proxy that routes IDE traffic (especially **Cursor**) through your paid **ChatGPT/Codex** and **Claude Max** subscriptions instead of metered API keys. It runs on macOS and Windows, exposes a public HTTPS endpoint via ngrok or Cloudflare (required for Cursor), and supports dual-provider routing from a single Base URL — Codex models like `gpt-5.5` and Claude models like `opus-4.8max` in one setup.
 
 ## Prerequisites
 
 - **Node.js 20+** or **[Bun](https://bun.sh) 1.1+** (either works for install and run)
 - **ChatGPT/Codex** and/or **Claude Max** subscription (the accounts you want to route)
-- **Cloudflare account** (free tier is enough for tunnels)
-- **Domain on Cloudflare** (optional but recommended for a stable hostname; you can use a free `*.trycloudflare.com` URL for quick testing only)
+- **ngrok account** (free tier is enough for one static domain)
+- **ngrok CLI** installed locally for the default tunnel mode
+- **Cloudflare account/domain** only if you choose Cloudflare named tunnels instead
 
 ## Quick start
 
@@ -41,15 +42,15 @@ Follow these steps in order. Each step links to more detail below.
 
    Effort levels are **provider-specific**: Codex uses tokens like `xhigh`; Claude uses Anthropic-native levels like `high` and `max` (not `xhigh`).
 
-4. **Set up a named Cloudflare tunnel** (recommended; stable URL for Cursor):
+4. **Set up a ngrok static-domain tunnel** (default; stable URL for Cursor):
 
    ```bash
-   eport tunnel setup named
+   eport tunnel setup ngrok
    ```
 
-   You need a **tunnel token** and a **public hostname** from the Cloudflare dashboard. See [Cloudflare named tunnel setup](#cloudflare-named-tunnel-setup) for click-by-click instructions.
+   You need a **ngrok authtoken** and a **static domain URL** from the ngrok dashboard. See [ngrok static-domain setup](#ngrok-static-domain-setup) for click-by-click instructions.
 
-5. **Start the proxy** (named tunnel is the default):
+5. **Start the proxy** (ngrok tunnel is the default):
 
    ```bash
    eport up
@@ -96,6 +97,35 @@ eport accounts status            # active account + last rotation reason
 | **Manual** `eport accounts switch` | Your chosen account becomes active immediately |
 
 `eport status` shows the active Codex and Claude account when the proxy is running.
+
+---
+
+## ngrok static-domain setup
+
+Cursor's cloud backend cannot reach `localhost` or private networks. ePort must be reachable at a public HTTPS URL. A free ngrok static domain gives you a stable hostname, so you can paste the Cursor Base URL once and keep using `eport up`.
+
+> **Cost note:** ngrok currently offers a free static domain for personal use. If ngrok changes its free tier, you can still use Cloudflare named tunnels or `--tunnel none` with your own public URL.
+
+1. Create or sign in to a free [ngrok account](https://dashboard.ngrok.com/signup).
+2. Install the [ngrok agent](https://ngrok.com/download) and make sure `ngrok` is on your PATH.
+3. In the ngrok dashboard, copy your authtoken.
+4. Reserve a static domain, for example `your-name.ngrok-free.app`.
+5. Back in the terminal:
+
+   ```bash
+   eport tunnel setup ngrok
+   # paste authtoken and static domain when prompted
+   ```
+
+   Or use flags:
+
+   ```bash
+   eport tunnel setup ngrok --token <ngrok-authtoken> --url your-name.ngrok-free.app
+   ```
+
+6. Verify: `eport up` should print `https://your-name.ngrok-free.app/v1`.
+
+ePort stores the authtoken in `~/.eport/config` and passes it to the ngrok child process as `NGROK_AUTHTOKEN`. It does not modify your global ngrok config.
 
 ---
 
@@ -233,14 +263,14 @@ Format: `[bare-model-id][effort-token]` — **no** `-fast` or other speed-tier s
 
 ### Effort precedence
 
-When multiple sources set effort, **highest wins** (same on Codex and Claude routes):
+When multiple sources set effort, explicit model suffixes win over client body defaults:
 
-1. Request body effort/thinking fields when Cursor sends them — `reasoning.effort` on Codex; same plus Claude-native equivalents (`thinking`, etc.) on Claude routes
-2. Explicit model suffix
+1. Explicit model suffix
+2. Request body effort/thinking fields when Cursor sends them — `reasoning.effort` on Codex; same plus Claude-native equivalents (`thinking`, etc.) on Claude routes
 3. Per-model default in config (`eport config model …`)
 4. Global default
 
-Body beats suffix (e.g. `gpt-5.5xhigh` + body `medium` → `medium`). Suffix and config apply only when the body omits effort.
+Suffix beats body (e.g. `gpt-5.5xhigh` + body `medium` → `xhigh`). Config applies only when the request has no suffix/body effort.
 
 See [docs/prd/eport-v1.md](./docs/prd/eport-v1.md) (effort precedence section).
 
@@ -271,7 +301,7 @@ eport config model opus-4.8 --effort max
 eport config --fast on
 
 # Default tunnel mode
-eport config --tunnel named
+eport config --tunnel ngrok
 ```
 
 ### Interactive config
@@ -303,7 +333,7 @@ ePort stores a cryptographically random API key in `~/.eport/config`. Cursor sen
 | `eport api-key show` | Display current key |
 | `eport api-key rotate` | Generate new key; old key invalid immediately; print new paste block |
 
-**Required** when the tunnel is public (named or quick). **Optional** for `eport up --tunnel none` (local-only).
+**Required** when the tunnel is public (ngrok, named, or quick). **Optional** for `eport up --tunnel none` (local-only).
 
 ---
 
@@ -311,16 +341,18 @@ ePort stores a cryptographically random API key in `~/.eport/config`. Cursor sen
 
 | Mode | Command | URL stability | Best for |
 |------|---------|---------------|----------|
-| **named** (default) | `eport up` or `eport up --tunnel named` | Fixed hostname you configure | Daily Cursor use |
+| **ngrok** (default) | `eport up` or `eport up --tunnel ngrok` | Fixed static domain you configure | Daily Cursor use without owning a domain |
+| **named** | `eport up --tunnel named` | Fixed Cloudflare hostname you configure | Daily Cursor use with your own domain |
 | **quick** | `eport up --tunnel quick` | Random `*.trycloudflare.com`; changes each restart | Try-it / debugging |
-| **none** | `eport up --tunnel none` | No tunnel; local proxy only | You supply your own public URL (VPS, ngrok, etc.) |
+| **none** | `eport up --tunnel none` | No tunnel; local proxy only | You supply your own public URL |
 
 Setup commands:
 
 ```bash
-eport tunnel setup named    # save token + hostname to config
+eport tunnel setup ngrok    # save authtoken + static domain to config
+eport tunnel setup named    # save Cloudflare token + hostname to config
 eport tunnel setup quick      # no dashboard setup; ephemeral URL at runtime
-eport tunnel setup            # interactive wizard (named vs quick)
+eport tunnel setup            # interactive wizard
 ```
 
 ---
@@ -345,7 +377,7 @@ eport service uninstall   # remove auto-start
 
 Run `eport service install` from an elevated shell on Windows if you get access-denied errors from `schtasks`.
 
-> **Warning — do not use service install with quick tunnel.** Quick tunnels (`eport up --tunnel quick`) generate a new `*.trycloudflare.com` URL on every restart. A background service restarts across reboots and logins, so Cursor's Base URL will silently break. Use a **named tunnel** (`eport tunnel setup named`) before `eport service install`.
+> **Warning — do not use service install with quick tunnel.** Quick tunnels (`eport up --tunnel quick`) generate a new `*.trycloudflare.com` URL on every restart. A background service restarts across reboots and logins, so Cursor's Base URL will silently break. Use **ngrok** (`eport tunnel setup ngrok`) or a **named Cloudflare tunnel** (`eport tunnel setup named`) before `eport service install`.
 
 ---
 
@@ -353,11 +385,11 @@ Run `eport service install` from an elevated shell on Windows if you get access-
 
 ### Cursor says localhost / private network is forbidden
 
-Cursor's cloud backend cannot call `127.0.0.1` or RFC1918 addresses. Use a **public HTTPS URL** from a named or quick tunnel. Set Base URL to `https://your-hostname/v1`, not `http://localhost:8787/v1`.
+Cursor's cloud backend cannot call `127.0.0.1` or RFC1918 addresses. Use a **public HTTPS URL** from ngrok, named Cloudflare, or quick tunnel. Set Base URL to `https://your-hostname/v1`, not `http://localhost:8787/v1`.
 
 ### Tunnel URL changed and Cursor stopped working
 
-**Quick tunnels** generate a new `*.trycloudflare.com` URL on every restart. Switch to a **named tunnel** (`eport tunnel setup named`) for a stable hostname, update Cursor Base URL once, and use `eport service install` so the tunnel stays up across reboots.
+**Quick tunnels** generate a new `*.trycloudflare.com` URL on every restart. Switch to **ngrok** (`eport tunnel setup ngrok`) or a **named Cloudflare tunnel** (`eport tunnel setup named`) for a stable hostname, update Cursor Base URL once, and use `eport service install` so the tunnel stays up across reboots.
 
 ### Auth expired / 401 / refresh_token_expired
 
