@@ -25,6 +25,7 @@ interface ChatCompletionStreamState {
   model: string;
   sentRole: boolean;
   toolCalls: Map<string, { slot: number; argsLen: number; callId: string; name: string }>;
+  reasoningItems: Set<string>;
   nextSlot: number;
   hadToolCall: boolean;
 }
@@ -47,6 +48,7 @@ export async function translateResponsesSseToChat(
     model: options.model,
     sentRole: false,
     toolCalls: new Map(),
+    reasoningItems: new Set(),
     nextSlot: 0,
     hadToolCall: false,
   };
@@ -146,18 +148,18 @@ function formatChatCompletionEvent(
       );
     }
 
+    case "response.reasoning.delta":
+    case "response.reasoning_summary_text.delta": {
+      const delta = event.delta;
+      if (typeof delta !== "string" || delta.length === 0) return null;
+      return formatAssistantRoleChunk(state) + formatReasoningTextChunk(delta, state);
+    }
+
     case "response.output_item.added": {
       const toolStart = formatToolCallStart(event, state);
       if (toolStart) return toolStart;
 
-      const item = event.item as Record<string, unknown> | undefined;
-      if (item?.type === "reasoning") {
-        const encrypted = item.encrypted_content;
-        if (typeof encrypted === "string" && encrypted.length > 0) {
-          return formatAssistantRoleChunk(state);
-        }
-      }
-      return null;
+      return formatReasoningItem(event, state);
     }
 
     case "response.function_call_arguments.delta":
@@ -165,7 +167,7 @@ function formatChatCompletionEvent(
       return formatToolCallArgsDelta(event, state);
 
     case "response.output_item.done":
-      return formatToolCallDone(event, state);
+      return formatToolCallDone(event, state) ?? formatReasoningItem(event, state);
 
     case "response.completed":
       return (
@@ -290,6 +292,37 @@ function formatToolCallDone(
     { tool_calls: [{ index: tc.slot, function: { arguments: args } }] },
     null,
   );
+}
+
+function formatReasoningItem(
+  event: Record<string, unknown>,
+  state: ChatCompletionStreamState,
+): string | null {
+  const item = event.item as Record<string, unknown> | undefined;
+  if (item?.type !== "reasoning") return null;
+
+  const encrypted = item.encrypted_content;
+  if (typeof encrypted !== "string" || encrypted.length === 0) return null;
+
+  const itemId = typeof item.id === "string" ? item.id : encrypted;
+  if (state.reasoningItems.has(itemId)) return null;
+  state.reasoningItems.add(itemId);
+
+  return formatAssistantRoleChunk(state) + formatReasoningReplayChunk(item, state);
+}
+
+function formatReasoningTextChunk(
+  delta: string,
+  state: ChatCompletionStreamState,
+): string {
+  return formatChatCompletionChunk(state, { reasoning_content: delta }, null);
+}
+
+function formatReasoningReplayChunk(
+  item: Record<string, unknown>,
+  state: ChatCompletionStreamState,
+): string {
+  return formatChatCompletionChunk(state, { reasoning: item }, null);
 }
 
 function formatChatCompletionChunk(

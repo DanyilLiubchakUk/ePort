@@ -37,6 +37,42 @@ export function functionCallStream(): Record<string, unknown>[] {
   ];
 }
 
+export function reasoningStream(): Record<string, unknown>[] {
+  return [
+    { type: "response.created", response: { id: "resp_reasoning", model: "gpt-5.5" } },
+    {
+      type: "response.output_item.added",
+      item: {
+        type: "reasoning",
+        id: "rs_1",
+        summary: [],
+        encrypted_content: "encrypted-reasoning-blob",
+      },
+    },
+    { type: "response.reasoning.delta", delta: "thinking " },
+    { type: "response.reasoning_summary_text.delta", delta: "summary" },
+    { type: "response.output_text.delta", delta: "Done" },
+    { type: "response.completed", response: { id: "resp_reasoning", status: "completed" } },
+  ];
+}
+
+export function reasoningTextAndToolStream(): Record<string, unknown>[] {
+  return [
+    { type: "response.created", response: { id: "resp_reason_tool", model: "gpt-5.5" } },
+    {
+      type: "response.output_item.added",
+      item: {
+        type: "reasoning",
+        id: "rs_tool",
+        summary: [],
+        encrypted_content: "encrypted-tool-reasoning",
+      },
+    },
+    { type: "response.output_text.delta", delta: "I'll check." },
+    ...functionCallStream().slice(1),
+  ];
+}
+
 export function customToolCallStream(): Record<string, unknown>[] {
   return [
     { type: "response.created", response: { id: "resp_ct", model: "gpt-5.5" } },

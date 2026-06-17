@@ -21,6 +21,7 @@ import {
 import {
   codexSseBody,
   functionCallStream,
+  reasoningStream,
   responsesPassthroughToolStream,
 } from "./fixtures/codex-tool-sse.ts";
 import { chatToolFollowUpBody, expectedSanitizedToolInput } from "../codex/fixtures/ingress-bodies.ts";
@@ -469,6 +470,76 @@ describe("edge router", () => {
     expect(lastBody?.tools).toEqual(chatToolFollowUpBody.tools);
     expect(lastBody?.tool_choice).toBe("auto");
     expect(lastBody?.input).toEqual(expectedSanitizedToolInput);
+  });
+
+  it("round-trips Codex encrypted reasoning on chat egress and follow-up ingress", async () => {
+    let upstreamCalls = 0;
+    let lastBody: Record<string, unknown> | undefined;
+
+    const { baseUrl } = startTestServer({
+      codexFetchFn: async (_url, init) => {
+        upstreamCalls += 1;
+        lastBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        if (upstreamCalls === 1) {
+          return new Response(codexSseBody(reasoningStream()), {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          });
+        }
+        return codexSseResponse([
+          { type: "response.output_text.delta", delta: "continued" },
+          { type: "response.completed", response: { status: "completed" } },
+        ]);
+      },
+    });
+
+    const turn1 = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        messages: [{ role: "user", content: "reason about this" }],
+        stream: true,
+      }),
+    });
+    expect(turn1.status).toBe(200);
+    const turn1Text = await turn1.text();
+    expect(turn1Text).toContain('"reasoning"');
+    expect(turn1Text).toContain("encrypted-reasoning-blob");
+
+    const turn2 = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        input: [
+          { role: "user", content: "reason about this" },
+          {
+            type: "reasoning",
+            id: "rs_1",
+            summary: [],
+            encrypted_content: "encrypted-reasoning-blob",
+          },
+          { role: "user", content: "continue" },
+        ],
+        stream: true,
+      }),
+    });
+    expect(turn2.status).toBe(200);
+    await turn2.text();
+
+    expect(upstreamCalls).toBe(2);
+    expect(lastBody?.input).toEqual([
+      { role: "user", content: "reason about this" },
+      {
+        type: "reasoning",
+        id: "rs_1",
+        summary: [],
+        encrypted_content: "encrypted-reasoning-blob",
+      },
+      { role: "user", content: "continue" },
+    ]);
+    expect(lastBody?.include).toContain("reasoning.encrypted_content");
   });
 
   it("passthrough Codex tool SSE on /v1/responses without chat translation", async () => {

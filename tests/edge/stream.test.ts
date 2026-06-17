@@ -6,6 +6,8 @@ import {
   customToolCallStream,
   functionCallDoneFallbackStream,
   functionCallStream,
+  reasoningStream,
+  reasoningTextAndToolStream,
   textOnlyStream,
 } from "./fixtures/codex-tool-sse.ts";
 
@@ -127,5 +129,66 @@ describe("translateResponsesSseToChat — Codex tool egress", () => {
       delta: { tool_calls: Array<{ function: { arguments: string } }> };
     }>;
     expect(done[0].delta.tool_calls[0].function.arguments).toBe('{"q":"test"}');
+  });
+
+  it("emits encrypted reasoning replay and text reasoning chunks", async () => {
+    const sse = await collectChatChunks(reasoningStream());
+    const chunks = parseDataChunks(sse);
+
+    const reasoningReplay = chunks.find((c) => {
+      const choices = c.choices as Array<{
+        delta?: { reasoning?: { encrypted_content?: string } };
+      }>;
+      return choices?.[0]?.delta?.reasoning?.encrypted_content === "encrypted-reasoning-blob";
+    });
+    expect(reasoningReplay).toBeDefined();
+
+    const reasoningText = chunks
+      .map((c) => {
+        const choices = c.choices as Array<{ delta?: { reasoning_content?: string } }>;
+        return choices?.[0]?.delta?.reasoning_content ?? "";
+      })
+      .join("");
+    expect(reasoningText).toBe("thinking summary");
+
+    const contentText = chunks
+      .map((c) => {
+        const choices = c.choices as Array<{ delta?: { content?: string } }>;
+        return choices?.[0]?.delta?.content ?? "";
+      })
+      .join("");
+    expect(contentText).toContain("Done");
+  });
+
+  it("keeps reasoning, assistant text, and tool calls in one turn", async () => {
+    const sse = await collectChatChunks(reasoningTextAndToolStream());
+    const chunks = parseDataChunks(sse);
+
+    expect(
+      chunks.some((c) => {
+        const choices = c.choices as Array<{
+          delta?: { reasoning?: { encrypted_content?: string } };
+        }>;
+        return choices?.[0]?.delta?.reasoning?.encrypted_content === "encrypted-tool-reasoning";
+      }),
+    ).toBe(true);
+    expect(
+      chunks.some((c) => {
+        const choices = c.choices as Array<{ delta?: { content?: string } }>;
+        return choices?.[0]?.delta?.content === "I'll check.";
+      }),
+    ).toBe(true);
+    expect(
+      chunks.some((c) => {
+        const choices = c.choices as Array<{ delta?: { tool_calls?: unknown[] } }>;
+        return Array.isArray(choices?.[0]?.delta?.tool_calls);
+      }),
+    ).toBe(true);
+    expect(
+      chunks.some((c) => {
+        const choices = c.choices as Array<{ finish_reason?: string | null }>;
+        return choices?.[0]?.finish_reason === "tool_calls";
+      }),
+    ).toBe(true);
   });
 });
