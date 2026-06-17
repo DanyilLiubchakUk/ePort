@@ -3,6 +3,7 @@ import { ClaudeUpstreamClient } from "../claude/index.ts";
 import { CodexUpstreamClient } from "../codex/index.ts";
 import type { ConfigProfile, SessionFlags, TunnelMode } from "../config/types.ts";
 import { ModelCatalog, ModelResolver } from "../resolver/index.ts";
+import { clearProxyRuntimeState } from "../runtime/state.ts";
 import { createEdgeHandler } from "./router.ts";
 
 export interface EdgeServerOptions {
@@ -66,6 +67,7 @@ export function startEdgeServer(options: EdgeServerOptions): EdgeServerHandle {
   });
 
   const port = server.port ?? options.port ?? 8787;
+  auth.setRuntimePort(port);
 
   return {
     host,
@@ -73,6 +75,7 @@ export function startEdgeServer(options: EdgeServerOptions): EdgeServerHandle {
     baseUrl: `http://${host}:${port}/v1`,
     stop: () => {
       if (ownsCatalog) catalog.stop();
+      clearProxyRuntimeState(options.home);
       server.stop();
     },
   };

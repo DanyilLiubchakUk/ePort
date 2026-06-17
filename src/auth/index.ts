@@ -1,4 +1,16 @@
 export { AuthManager, formatAuthStatus } from "./manager.ts";
+export { AccountsStore } from "./accounts-store.ts";
+export {
+  formatAccountsList,
+  formatAccountsStatus,
+  formatActiveAccount,
+} from "./accounts-format.ts";
+export type {
+  AccountsStatusSummary,
+  ActiveAccountInfo,
+  ProviderAccountsStatus,
+  RotationReason,
+} from "./account-types.ts";
 export {
   CLAUDE_REFRESH_TOKEN_EXPIRED_HINT,
   REFRESH_TOKEN_EXPIRED_HINT,

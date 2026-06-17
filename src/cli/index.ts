@@ -2,6 +2,13 @@ import { homedir } from "node:os";
 
 import { ConfigStore } from "../config/index.ts";
 import {
+  runAccountsAdd,
+  runAccountsList,
+  runAccountsReorder,
+  runAccountsStatus,
+  runAccountsSwitch,
+} from "./accounts-commands.ts";
+import {
   runApiKeyRotate,
   runApiKeyShow,
   runAuthLogin,
@@ -20,7 +27,15 @@ import {
 import { parseArgv } from "./parser.ts";
 import { runTunnel } from "./tunnel-commands.ts";
 
-const IMPLEMENTED_COMMANDS = new Set(["init", "api-key", "auth", "up", "tunnel", "status"]);
+const IMPLEMENTED_COMMANDS = new Set([
+  "init",
+  "api-key",
+  "auth",
+  "accounts",
+  "up",
+  "tunnel",
+  "status",
+]);
 
 function printHelp(command?: string, subcommand?: string): void {
   const text = helpForCommand(command, subcommand);
@@ -116,6 +131,37 @@ export async function runCli(argv: string[], home = homedir()): Promise<number> 
         token: parsed.token,
         hostname: parsed.hostname,
       });
+    case "accounts": {
+      const action = parsed.subcommand;
+      if (!action || action === "list") {
+        return runAccountsList(home, parsed.rest[0], {
+          json: parsed.json,
+          verbose: parsed.session.verbose,
+        });
+      }
+      if (action === "add") {
+        return runAccountsAdd(
+          home,
+          parsed.rest[0],
+          parsed.label,
+          Boolean(parsed.session.verbose),
+        );
+      }
+      if (action === "switch") {
+        return runAccountsSwitch(home, parsed.rest[0], parsed.rest[1]);
+      }
+      if (action === "reorder") {
+        return runAccountsReorder(home, parsed.rest[0], parsed.rest.slice(1));
+      }
+      if (action === "status") {
+        return runAccountsStatus(home, parsed.rest[0], {
+          json: parsed.json,
+          verbose: parsed.session.verbose,
+        });
+      }
+      console.error(`unknown accounts subcommand: ${action}`);
+      return 1;
+    }
     default:
       if (!IMPLEMENTED_COMMANDS.has(parsed.command)) {
         return runNotImplemented(parsed.command);

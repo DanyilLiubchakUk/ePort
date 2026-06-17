@@ -201,12 +201,12 @@ export function readTestOAuthFixture(home: string): CodexAuthFile | null {
 
 export async function runCodexOAuthLogin(
   home: string,
-  options: { verbose?: boolean; deps?: CodexOAuthDeps } = {},
+  options: { verbose?: boolean; deps?: CodexOAuthDeps; authPath?: string } = {},
 ): Promise<CodexAuthFile> {
+  const targetPath = options.authPath ?? getEportCodexAuthPath(home);
   const fixture = readTestOAuthFixture(home);
   if (fixture) {
-    const path = getEportCodexAuthPath(home);
-    writeCodexAuthFile(path, fixture);
+    writeCodexAuthFile(targetPath, fixture);
     return fixture;
   }
 
@@ -217,7 +217,7 @@ export async function runCodexOAuthLogin(
     ((loginOptions) => defaultLoginWithPkce(loginOptions));
 
   const authFile = await loginWithPkce({ verbose: options.verbose, fetchFn, openBrowser });
-  writeCodexAuthFile(getEportCodexAuthPath(home), authFile);
+  writeCodexAuthFile(targetPath, authFile);
   return authFile;
 }
 

@@ -167,12 +167,12 @@ export function readTestClaudeOAuthFixture(home: string): ClaudeAuthFile | null 
 
 export async function runClaudeOAuthLogin(
   home: string,
-  options: { verbose?: boolean; deps?: ClaudeOAuthDeps } = {},
+  options: { verbose?: boolean; deps?: ClaudeOAuthDeps; authPath?: string } = {},
 ): Promise<ClaudeAuthFile> {
+  const targetPath = options.authPath ?? getEportClaudeAuthPath(home);
   const fixture = readTestClaudeOAuthFixture(home);
   if (fixture) {
-    const path = getEportClaudeAuthPath(home);
-    writeClaudeAuthFile(path, fixture);
+    writeClaudeAuthFile(targetPath, fixture);
     return fixture;
   }
 
@@ -183,7 +183,7 @@ export async function runClaudeOAuthLogin(
     ((loginOptions) => defaultLoginWithPkce(loginOptions));
 
   const authFile = await loginWithPkce({ verbose: options.verbose, fetchFn, openBrowser });
-  writeClaudeAuthFile(getEportClaudeAuthPath(home), authFile);
+  writeClaudeAuthFile(targetPath, authFile);
   return authFile;
 }
 

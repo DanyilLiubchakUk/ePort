@@ -196,6 +196,7 @@ async function handleCodexRoute(
   parsed: Record<string, unknown>,
   model: string,
   route: ReturnType<ModelResolver["resolve"]>,
+  retried = false,
 ): Promise<Response> {
   const url = new URL(req.url);
   const abort = new AbortController();
@@ -271,6 +272,27 @@ async function handleCodexRoute(
       }),
     );
   } catch (error) {
+    const upstreamError = error instanceof CodexUpstreamError ? error : null;
+    if (
+      !retried &&
+      upstreamError &&
+      (upstreamError.status === 429 || upstreamError.status === 401)
+    ) {
+      const action = await deps.auth.handleUpstreamError("codex", upstreamError.status);
+      if (action === "retry") {
+        return handleCodexRoute(
+          req,
+          deps,
+          edgeShape,
+          started,
+          parsed,
+          model,
+          route,
+          true,
+        );
+      }
+    }
+
     return handleUpstreamError(error, {
       method: req.method,
       path: url.pathname,
@@ -291,6 +313,7 @@ async function handleClaudeRoute(
   parsed: Record<string, unknown>,
   model: string,
   route: ReturnType<ModelResolver["resolve"]>,
+  retried = false,
 ): Promise<Response> {
   const url = new URL(req.url);
   const abort = new AbortController();
@@ -368,6 +391,27 @@ async function handleClaudeRoute(
       }),
     );
   } catch (error) {
+    const upstreamError = error instanceof ClaudeUpstreamError ? error : null;
+    if (
+      !retried &&
+      upstreamError &&
+      (upstreamError.status === 429 || upstreamError.status === 401)
+    ) {
+      const action = await deps.auth.handleUpstreamError("claude", upstreamError.status);
+      if (action === "retry") {
+        return handleClaudeRoute(
+          req,
+          deps,
+          edgeShape,
+          started,
+          parsed,
+          model,
+          route,
+          true,
+        );
+      }
+    }
+
     return handleUpstreamError(error, {
       method: req.method,
       path: url.pathname,

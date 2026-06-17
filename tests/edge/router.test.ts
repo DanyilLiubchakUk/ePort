@@ -4,11 +4,15 @@ import { tmpdir } from "node:os";
 
 import { ClaudeUpstreamClient, type FetchFn as ClaudeFetchFn } from "../../src/claude/index.ts";
 import { CodexUpstreamClient, type FetchFn } from "../../src/codex/index.ts";
+import { AuthManager } from "../../src/auth/manager.ts";
+import { getAccountAuthPath } from "../../src/auth/accounts-paths.ts";
+import { writeCodexAuthFile } from "../../src/auth/codex-file.ts";
 import { emptyConfigProfile } from "../../src/config/types.ts";
 import { startEdgeServer } from "../../src/edge/index.ts";
 import {
   makeClaudeAuthFile,
   makeCodexAuthFile,
+  makeTestJwt,
   msFromNow,
   secondsFromNow,
   writeEportAuth,
@@ -281,5 +285,73 @@ describe("edge router", () => {
     expect(claudeCalls).toBe(1);
     const text = await response.text();
     expect(text).toContain("chat.completion.chunk");
+  });
+
+  it("rotates Codex account on upstream 429 and retries once", async () => {
+    home = mkdtempSync(`${tmpdir()}/eport-edge-queue-`);
+    writeEportClaudeAuth(home, makeClaudeAuthFile(msFromNow(3_600_000)));
+
+    const auth = new AuthManager(home);
+    for (const [id, key] of [
+      ["a1", "acct-1"],
+      ["a2", "acct-2"],
+    ] as const) {
+      const authPath = getAccountAuthPath(home, "codex", id);
+      const file = makeCodexAuthFile(secondsFromNow(3600));
+      file.tokens.account_id = key;
+      file.tokens.access_token = makeTestJwt(secondsFromNow(3600), key);
+      file.tokens.id_token = file.tokens.access_token;
+      writeCodexAuthFile(authPath, file);
+      auth.accounts.addAccount("codex", { id, authPath, accountKey: key });
+    }
+
+    let upstreamCalls = 0;
+    const accountIds: string[] = [];
+    const codexUpstream = new CodexUpstreamClient({
+      installationId: "edge-install",
+      fetchFn: async (_url, init) => {
+        upstreamCalls += 1;
+        const headers = init?.headers as Record<string, string> | undefined;
+        accountIds.push(headers?.["chatgpt-account-id"] ?? "");
+        if (upstreamCalls === 1) {
+          return new Response("rate limited", { status: 429 });
+        }
+        return codexSseResponse([
+          { type: "response.output_text.delta", delta: "ok" },
+          { type: "response.completed", response: { status: "completed" } },
+        ]);
+      },
+    });
+
+    const profile = { ...emptyConfigProfile(), proxyApiKey: "eport_test_key" };
+    server = startEdgeServer({
+      home,
+      port: 0,
+      config: profile,
+      session: {},
+      tunnelMode: "none",
+      proxyApiKey: profile.proxyApiKey,
+      auth,
+      codexUpstream,
+      claudeUpstream: new ClaudeUpstreamClient({
+        fetchFn: async () =>
+          anthropicSseResponse([{ event: "message_stop", data: {} }]),
+      }),
+    });
+
+    const response = await fetch(`http://${server.host}:${server.port}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        input: [{ role: "user", content: "rotate me" }],
+        stream: true,
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(upstreamCalls).toBe(2);
+    expect(accountIds).toEqual(["acct-1", "acct-2"]);
+    expect(auth.accounts.getActiveEntry("codex")?.id).toBe("a2");
   });
 });

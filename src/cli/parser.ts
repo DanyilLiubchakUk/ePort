@@ -8,6 +8,7 @@ export interface ParsedArgv {
   port?: number;
   token?: string;
   hostname?: string;
+  label?: string;
   help: boolean;
   version: boolean;
   json: boolean;
@@ -32,6 +33,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
   let port: number | undefined;
   let tunnelToken: string | undefined;
   let hostname: string | undefined;
+  let label: string | undefined;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -96,6 +98,14 @@ export function parseArgv(argv: string[]): ParsedArgv {
       hostname = value;
       continue;
     }
+    if (arg === "--label") {
+      const value = argv[++i];
+      if (!value || isFlag(value)) {
+        throw new Error("--label requires a value");
+      }
+      label = value;
+      continue;
+    }
 
     positional.push(arg);
   }
@@ -110,6 +120,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
     port,
     token: tunnelToken,
     hostname,
+    label,
     help,
     version,
     json,

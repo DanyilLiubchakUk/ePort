@@ -12,6 +12,9 @@ import {
   runClaudeOAuthLogin,
   type ClaudeOAuthDeps,
 } from "./claude-oauth.ts";
+import { getAccountAuthPath } from "./accounts-paths.ts";
+import { AccountsStore } from "./accounts-store.ts";
+import type { AccountsStatusSummary } from "./account-types.ts";
 import { getCodexCliAuthPath, getEportCodexAuthPath } from "./paths.ts";
 import { getClaudeCliCredentialsPath, getEportClaudeAuthPath } from "./paths.ts";
 import {
@@ -29,6 +32,7 @@ import {
   runCodexOAuthLogin,
   type CodexOAuthDeps,
 } from "./codex-oauth.ts";
+import { extractAccountId } from "./jwt.ts";
 import type {
   AuthStatusSummary,
   ClaudeAuthFile,
@@ -44,6 +48,11 @@ import {
   REFRESH_SAFETY_WINDOW_MS,
   REFRESH_TOKEN_EXPIRED_HINT as EXPIRED_HINT,
 } from "./types.ts";
+import type { ActiveAccountInfo } from "./account-types.ts";
+import {
+  readProxyRuntimeState,
+  writeProxyRuntimeState,
+} from "../runtime/state.ts";
 
 interface ResolvedCodexStore {
   source: CredentialSource;
@@ -68,6 +77,7 @@ export class AuthManager {
   private readonly home: string;
   private readonly oauthDeps: ReturnType<typeof resolveOAuthDeps>;
   private readonly claudeOauthDeps: ReturnType<typeof resolveClaudeOAuthDeps>;
+  readonly accounts: AccountsStore;
   private cachedCodex: CodexCredentials | null = null;
   private cachedMtimeMs = 0;
   private cachedClaude: ClaudeCredentials | null = null;
@@ -79,11 +89,13 @@ export class AuthManager {
   private refreshFailureHint: string | undefined;
   private claudeRefreshFailureHint: string | undefined;
   private catalog: { invalidate(): void } | null = null;
+  private runtimePort: number | null = null;
 
   constructor(home: string, deps: AuthManagerDeps = {}) {
     this.home = home;
     this.oauthDeps = resolveOAuthDeps(deps.oauth);
     this.claudeOauthDeps = resolveClaudeOAuthDeps(deps.claudeOauth);
+    this.accounts = new AccountsStore(home);
   }
 
   status(): AuthStatusSummary {
@@ -95,6 +107,138 @@ export class AuthManager {
 
   setCatalog(catalog: { invalidate(): void }): void {
     this.catalog = catalog;
+  }
+
+  setRuntimePort(port: number): void {
+    this.runtimePort = port;
+    this.syncRuntimeActiveAccounts();
+  }
+
+  accountsStatus(provider?: Provider): AccountsStatusSummary {
+    return this.accounts.status(provider);
+  }
+
+  getActiveAccounts(): Partial<Record<Provider, ActiveAccountInfo>> {
+    const active: Partial<Record<Provider, ActiveAccountInfo>> = {};
+    for (const provider of ["codex", "claude"] as const) {
+      if (this.accounts.hasQueue(provider)) {
+        const info = this.accounts.getActiveInfo(provider);
+        if (info) active[provider] = info;
+        continue;
+      }
+
+      const status = provider === "codex" ? this.inspectCodex() : this.inspectClaude();
+      if (!status.authenticated) continue;
+      active[provider] = {
+        provider,
+        id: status.storePath ?? "default",
+        index: 1,
+        label: status.source === "cli" ? "cli" : "eport-oauth",
+      };
+    }
+    return active;
+  }
+
+  syncRuntimeActiveAccounts(): void {
+    if (!this.runtimePort) return;
+    const existing = readProxyRuntimeState(this.home);
+    writeProxyRuntimeState(this.home, {
+      pid: process.pid,
+      port: this.runtimePort,
+      startedAt: existing?.startedAt ?? Date.now(),
+      activeAccounts: this.getActiveAccounts(),
+    });
+  }
+
+  async addAccount(provider: Provider, label?: string, verbose = false): Promise<void> {
+    const id = crypto.randomUUID();
+    const authPath = getAccountAuthPath(this.home, provider, id);
+
+    if (provider === "codex") {
+      const auth = await runCodexOAuthLogin(this.home, {
+        verbose,
+        deps: {
+          fetchFn: this.oauthDeps.fetchFn,
+          openBrowser: this.oauthDeps.openBrowser,
+          loginWithPkce: this.oauthDeps.loginWithPkce,
+        },
+        authPath,
+      });
+      const accountKey =
+        auth.tokens.account_id ||
+        extractAccountId(auth.tokens.id_token) ||
+        extractAccountId(auth.tokens.access_token) ||
+        undefined;
+      this.accounts.addAccount(
+        provider,
+        { id, authPath, label, accountKey },
+        { makeActive: !this.accounts.hasQueue(provider) },
+      );
+    } else {
+      const auth = await runClaudeOAuthLogin(this.home, {
+        verbose,
+        deps: {
+          fetchFn: this.claudeOauthDeps.fetchFn,
+          openBrowser: this.claudeOauthDeps.openBrowser,
+          loginWithPkce: this.claudeOauthDeps.loginWithPkce,
+        },
+        authPath,
+      });
+      this.accounts.addAccount(
+        provider,
+        { id, authPath, label },
+        { makeActive: !this.accounts.hasQueue(provider) },
+      );
+    }
+
+    this.invalidateProviderCache(provider);
+    this.catalog?.invalidate();
+    this.syncRuntimeActiveAccounts();
+  }
+
+  switchAccount(provider: Provider, selector: string): ActiveAccountInfo {
+    const active = this.accounts.switchActive(provider, selector);
+    this.invalidateProviderCache(provider);
+    this.catalog?.invalidate();
+    this.syncRuntimeActiveAccounts();
+    return active;
+  }
+
+  reorderAccounts(provider: Provider, indices: number[]): ActiveAccountInfo {
+    const active = this.accounts.reorder(provider, indices);
+    this.invalidateProviderCache(provider);
+    this.catalog?.invalidate();
+    this.syncRuntimeActiveAccounts();
+    return active;
+  }
+
+  async handleUpstreamError(
+    provider: Provider,
+    status: 401 | 429,
+  ): Promise<"retry" | "fail"> {
+    if (status === 401) {
+      try {
+        if (provider === "codex") {
+          await this.coalescedRefresh();
+        } else {
+          await this.coalescedClaudeRefresh();
+        }
+        return "retry";
+      } catch {
+        // rotate only when refresh fails
+      }
+    }
+
+    const reason = status === 429 ? "429" : "401-refresh-failed";
+    const rotated = this.accounts.rotateToNext(provider, reason);
+    if (!rotated) {
+      return "fail";
+    }
+
+    this.invalidateProviderCache(provider);
+    this.catalog?.invalidate();
+    this.syncRuntimeActiveAccounts();
+    return "retry";
   }
 
   async login(provider?: Provider): Promise<void> {
@@ -329,6 +473,9 @@ export class AuthManager {
   }
 
   private resolveCodexStore(): ResolvedCodexStore | null {
+    const queued = this.resolveCodexStoreFromQueue();
+    if (queued) return queued;
+
     const cliPath = getCodexCliAuthPath(this.home);
     const eportPath = getEportCodexAuthPath(this.home);
     const cliAuth = readCodexAuthFile(cliPath);
@@ -380,6 +527,9 @@ export class AuthManager {
   }
 
   private resolveClaudeStore(): ResolvedClaudeStore | null {
+    const queued = this.resolveClaudeStoreFromQueue();
+    if (queued) return queued;
+
     const cliPath = getClaudeCliCredentialsPath(this.home);
     const eportPath = getEportClaudeAuthPath(this.home);
     const cliAuth = readClaudeAuthFile(cliPath);
@@ -637,6 +787,40 @@ export class AuthManager {
     this.cachedClaudeMtimeMs = getFileMtimeMs(resolved.path);
     this.claudeRefreshFailureHint = undefined;
     this.scheduleClaudeProactiveTimer(this.cachedClaude.expiresAt);
+  }
+
+  private resolveCodexStoreFromQueue(): ResolvedCodexStore | null {
+    const entry = this.accounts.getActiveEntry("codex");
+    if (!entry) return null;
+    const auth = readCodexAuthFile(entry.authPath);
+    if (!auth) return null;
+    return this.withCache({
+      source: "eport-oauth",
+      path: entry.authPath,
+      auth,
+      mtimeMs: getFileMtimeMs(entry.authPath),
+    });
+  }
+
+  private resolveClaudeStoreFromQueue(): ResolvedClaudeStore | null {
+    const entry = this.accounts.getActiveEntry("claude");
+    if (!entry) return null;
+    const auth = readClaudeAuthFile(entry.authPath);
+    if (!auth) return null;
+    return this.withClaudeCache({
+      source: "eport-oauth",
+      path: entry.authPath,
+      auth,
+      mtimeMs: getFileMtimeMs(entry.authPath),
+    });
+  }
+
+  private invalidateProviderCache(provider: Provider): void {
+    if (provider === "codex") {
+      this.invalidateCache();
+      return;
+    }
+    this.invalidateClaudeCache();
   }
 
   private invalidateCache(): void {
