@@ -6,6 +6,7 @@ import {
   sanitizeCodexRequest,
   type SanitizeCodexRequestOptions,
 } from "./sanitize.ts";
+import { normalizeCodexEdgeBody } from "./translate-request.ts";
 
 export const CODEX_RESPONSES_URL =
   "https://chatgpt.com/backend-api/codex/responses";
@@ -76,7 +77,8 @@ export class CodexUpstreamClient {
     rawBody: Record<string, unknown>,
     route: ResolvedRoute,
   ): Record<string, unknown> {
-    return sanitizeCodexRequest(rawBody, this.sanitizeOptions(route));
+    const normalized = normalizeCodexEdgeBody(rawBody);
+    return sanitizeCodexRequest(normalized, this.sanitizeOptions(route));
   }
 
   sessionIdForBody(body: Record<string, unknown>): string {

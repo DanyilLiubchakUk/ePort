@@ -23,6 +23,7 @@ import {
   functionCallStream,
   responsesPassthroughToolStream,
 } from "./fixtures/codex-tool-sse.ts";
+import { chatToolFollowUpBody, expectedSanitizedToolInput } from "../codex/fixtures/ingress-bodies.ts";
 
 function codexSseResponse(events: Record<string, unknown>[]): Response {
   const body = events
@@ -318,6 +319,53 @@ describe("edge router", () => {
     expect(text).toContain('"get_weather"');
     expect(text).toContain('"finish_reason":"tool_calls"');
     expect(text.trimEnd().endsWith("data: [DONE]")).toBe(true);
+  });
+
+  it("converts chat tool follow-up ingress to Responses input on upstream", async () => {
+    let upstreamCalls = 0;
+    let lastBody: Record<string, unknown> | undefined;
+
+    const { baseUrl } = startTestServer({
+      codexFetchFn: async (_url, init) => {
+        upstreamCalls += 1;
+        lastBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        if (upstreamCalls === 1) {
+          return new Response(codexSseBody(functionCallStream()), {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          });
+        }
+        return codexSseResponse([
+          { type: "response.output_text.delta", delta: "18C and sunny" },
+          { type: "response.completed", response: { status: "completed" } },
+        ]);
+      },
+    });
+
+    const turn1 = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        messages: [{ role: "user", content: "weather in London?" }],
+        stream: true,
+      }),
+    });
+    expect(turn1.status).toBe(200);
+    await turn1.text();
+
+    const turn2 = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(chatToolFollowUpBody),
+    });
+    expect(turn2.status).toBe(200);
+    await turn2.text();
+
+    expect(upstreamCalls).toBe(2);
+    expect(lastBody?.tools).toEqual(chatToolFollowUpBody.tools);
+    expect(lastBody?.tool_choice).toBe("auto");
+    expect(lastBody?.input).toEqual(expectedSanitizedToolInput);
   });
 
   it("passthrough Codex tool SSE on /v1/responses without chat translation", async () => {
