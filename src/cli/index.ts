@@ -27,6 +27,14 @@ import {
 } from "./help.ts";
 import { parseArgv } from "./parser.ts";
 import { runTunnel } from "./tunnel-commands.ts";
+import {
+  runServiceInstall,
+  runServiceRestart,
+  runServiceStart,
+  runServiceStatus,
+  runServiceStop,
+  runServiceUninstall,
+} from "./service-commands.ts";
 
 const IMPLEMENTED_COMMANDS = new Set([
   "init",
@@ -37,6 +45,7 @@ const IMPLEMENTED_COMMANDS = new Set([
   "up",
   "tunnel",
   "status",
+  "service",
 ]);
 
 function printHelp(command?: string, subcommand?: string): void {
@@ -173,6 +182,33 @@ export async function runCli(argv: string[], home = homedir()): Promise<number> 
         modelFast: parsed.session.fast,
         tunnel: parsed.session.tunnel,
       });
+    case "service": {
+      const action = parsed.subcommand;
+      if (!action || action === "status") {
+        return runServiceStatus(store, home, {
+          json: parsed.json,
+          verbose: parsed.session.verbose,
+        });
+      }
+      if (action === "install") {
+        return runServiceInstall(store, home, Boolean(parsed.session.verbose));
+      }
+      if (action === "uninstall") {
+        return runServiceUninstall(store, home, Boolean(parsed.session.verbose));
+      }
+      if (action === "start") {
+        return runServiceStart(store, home, Boolean(parsed.session.verbose));
+      }
+      if (action === "stop") {
+        return runServiceStop(store, home);
+      }
+      if (action === "restart") {
+        return runServiceRestart(store, home, Boolean(parsed.session.verbose));
+      }
+      console.error(`unknown service subcommand: ${action}`);
+      printHelp("service");
+      return 1;
+    }
     default:
       if (!IMPLEMENTED_COMMANDS.has(parsed.command)) {
         return runNotImplemented(parsed.command);

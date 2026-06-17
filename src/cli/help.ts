@@ -194,6 +194,38 @@ NEXT STEPS
   Copy the printed "Flag equivalent" line to script or repeat settings.
   eport up`;
 
+export const SERVICE_HELP = `NAME
+  eport service — Install and control background service
+
+SYNOPSIS
+  eport service install|uninstall|start|stop|restart|status [options]
+
+DESCRIPTION
+  OS auto-start for proxy + tunnel (macOS launchd, Windows schtasks).
+  Install runs the same entrypoint as eport up with saved config.
+
+  Do not install when default tunnel mode is quick — URL changes on restart.
+
+SUBCOMMANDS
+  install            Register auto-start (named tunnel recommended)
+  uninstall          Remove registration; keeps ~/.eport config and auth
+  start              Start installed service
+  stop               Stop service; keeps registration
+  restart            Stop and start (after config/tunnel changes)
+  status             Show install/running state, tunnel URL, auth summary
+
+OPTIONS
+  --verbose          Show paths (install/start) or log tail (status)
+  --json             Machine-readable status (status subcommand)
+
+EXAMPLES
+  eport service install
+  eport service status --verbose
+
+NEXT STEPS
+  Windows: re-run from elevated shell if schtasks reports access denied.
+  eport service status  — confirm URL before pasting into Cursor`;
+
 export function helpForCommand(command?: string, subcommand?: string): string | null {
   if (!command) {
     return ROOT_HELP;
@@ -211,6 +243,8 @@ export function helpForCommand(command?: string, subcommand?: string): string | 
       return AUTH_STATUS_HELP;
     case "config":
       return CONFIG_HELP;
+    case "service":
+      return SERVICE_HELP;
     default:
       if (subcommand) {
         return null;
