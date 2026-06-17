@@ -9,3 +9,11 @@ export function getCodexCliAuthPath(home: string): string {
 export function getEportCodexAuthPath(home: string): string {
   return join(getEportHome(home), "auth", "codex.json");
 }
+
+export function getClaudeCliCredentialsPath(home: string): string {
+  return join(home, ".claude", ".credentials.json");
+}
+
+export function getEportClaudeAuthPath(home: string): string {
+  return join(getEportHome(home), "auth", "claude.json");
+}

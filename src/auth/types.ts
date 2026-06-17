@@ -2,6 +2,25 @@ export type Provider = "codex" | "claude";
 
 export type CredentialSource = "cli" | "eport-oauth" | "none";
 
+export interface ClaudeCredentials {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number;
+  source: CredentialSource;
+  storePath: string;
+}
+
+export interface ClaudeAiOauth {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number;
+}
+
+export interface ClaudeAuthFile {
+  claudeAiOauth: ClaudeAiOauth;
+  last_refresh?: string;
+}
+
 export interface CodexTokenSet {
   id_token: string;
   access_token: string;
@@ -44,3 +63,6 @@ export const REFRESH_SAFETY_WINDOW_MS = 60_000;
 
 export const REFRESH_TOKEN_EXPIRED_HINT =
   "refresh_token_expired or after `codex logout`: run `eport auth login codex`";
+
+export const CLAUDE_REFRESH_TOKEN_EXPIRED_HINT =
+  "refresh_token_expired or after Claude logout: run `eport auth login claude`";

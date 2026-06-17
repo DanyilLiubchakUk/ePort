@@ -4,12 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { AuthManager } from "../../src/auth/manager.ts";
+import type { ClaudeOAuthDeps } from "../../src/auth/claude-oauth.ts";
 import type { CodexOAuthDeps } from "../../src/auth/codex-oauth.ts";
 import {
+  makeClaudeAuthFile,
   makeCodexAuthFile,
+  msFromNow,
   secondsFromNow,
   writeCliAuth,
+  writeClaudeCliAuth,
   writeEportAuth,
+  writeEportClaudeAuth,
 } from "./helpers.ts";
 
 describe("auth manager — hybrid Codex credentials", () => {
@@ -156,7 +161,7 @@ describe("auth manager — status", () => {
     expect(status.guidance).toContain("eport auth login codex");
   });
 
-  it("keeps Claude status independent and unauthenticated", () => {
+  it("keeps Claude status independent when only Codex is authenticated", () => {
     home = mkdtempSync(join(tmpdir(), "eport-auth-"));
     writeCliAuth(home, makeCodexAuthFile(secondsFromNow(3600)));
 
@@ -165,5 +170,76 @@ describe("auth manager — status", () => {
     expect(summary.codex.authenticated).toBe(true);
     expect(summary.claude.authenticated).toBe(false);
     expect(summary.claude.source).toBe("none");
+  });
+});
+
+describe("auth manager — hybrid Claude credentials", () => {
+  let home: string;
+
+  afterEach(() => {
+    if (home) rmSync(home, { recursive: true, force: true });
+  });
+
+  it("reuses fresh Claude CLI credentials without OAuth", async () => {
+    home = mkdtempSync(join(tmpdir(), "eport-auth-"));
+    writeClaudeCliAuth(home, makeClaudeAuthFile(msFromNow(3_600_000)));
+
+    let oauthCalls = 0;
+    const deps: ClaudeOAuthDeps = {
+      loginWithPkce: async () => {
+        oauthCalls += 1;
+        return makeClaudeAuthFile(msFromNow(3_600_000));
+      },
+    };
+
+    const auth = new AuthManager(home, { claudeOauth: deps });
+    await auth.login("claude");
+    expect(oauthCalls).toBe(0);
+
+    const status = auth.status().claude;
+    expect(status.authenticated).toBe(true);
+    expect(status.source).toBe("cli");
+
+    const creds = await auth.getClaudeCredentials();
+    expect(creds.source).toBe("cli");
+  });
+
+  it("falls back to ePort Claude OAuth store when CLI is stale", async () => {
+    home = mkdtempSync(join(tmpdir(), "eport-auth-"));
+    writeClaudeCliAuth(home, makeClaudeAuthFile(msFromNow(-120_000)));
+    writeEportClaudeAuth(home, makeClaudeAuthFile(msFromNow(3_600_000)));
+
+    const auth = new AuthManager(home);
+    const status = auth.status().claude;
+    expect(status.source).toBe("eport-oauth");
+    expect(status.authenticated).toBe(true);
+  });
+
+  it("coalesces concurrent Claude refresh into a single in-flight request", async () => {
+    home = mkdtempSync(join(tmpdir(), "eport-auth-"));
+    writeEportClaudeAuth(home, makeClaudeAuthFile(msFromNow(-30_000)));
+
+    let refreshCalls = 0;
+    const deps: ClaudeOAuthDeps = {
+      exchangeRefreshToken: async () => {
+        refreshCalls += 1;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return {
+          access_token: makeClaudeAuthFile(msFromNow(3_600_000)).claudeAiOauth.accessToken,
+          refresh_token: "claude-refresh-test-token",
+          expires_in: 3600,
+        };
+      },
+    };
+
+    const auth = new AuthManager(home, { claudeOauth: deps });
+    const results = await Promise.all([
+      auth.getClaudeCredentials(),
+      auth.getClaudeCredentials(),
+    ]);
+
+    expect(refreshCalls).toBe(1);
+    expect(results.every((entry) => entry.source === "eport-oauth")).toBe(true);
+    expect(auth.inflightClaudeRefreshCount).toBe(0);
   });
 });

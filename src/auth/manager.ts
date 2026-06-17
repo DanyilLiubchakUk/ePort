@@ -1,4 +1,19 @@
+import {
+  claudeNeedsProactiveRefresh,
+  credentialsFromClaudeAuthFile,
+  isClaudeAccessTokenExpired,
+  isClaudeAccessTokenFresh,
+  readClaudeAuthFile,
+  tokenResponseToClaudeAuthFile,
+  writeClaudeAuthFile,
+} from "./claude-file.ts";
+import {
+  resolveClaudeOAuthDeps,
+  runClaudeOAuthLogin,
+  type ClaudeOAuthDeps,
+} from "./claude-oauth.ts";
 import { getCodexCliAuthPath, getEportCodexAuthPath } from "./paths.ts";
+import { getClaudeCliCredentialsPath, getEportClaudeAuthPath } from "./paths.ts";
 import {
   credentialsFromAuthFile,
   getFileMtimeMs,
@@ -16,13 +31,19 @@ import {
 } from "./codex-oauth.ts";
 import type {
   AuthStatusSummary,
+  ClaudeAuthFile,
+  ClaudeCredentials,
   CodexAuthFile,
   CodexCredentials,
   CredentialSource,
   Provider,
   ProviderAuthStatus,
 } from "./types.ts";
-import { REFRESH_SAFETY_WINDOW_MS, REFRESH_TOKEN_EXPIRED_HINT as EXPIRED_HINT } from "./types.ts";
+import {
+  CLAUDE_REFRESH_TOKEN_EXPIRED_HINT,
+  REFRESH_SAFETY_WINDOW_MS,
+  REFRESH_TOKEN_EXPIRED_HINT as EXPIRED_HINT,
+} from "./types.ts";
 
 interface ResolvedCodexStore {
   source: CredentialSource;
@@ -31,39 +52,54 @@ interface ResolvedCodexStore {
   mtimeMs: number;
 }
 
+interface ResolvedClaudeStore {
+  source: CredentialSource;
+  path: string;
+  auth: ClaudeAuthFile;
+  mtimeMs: number;
+}
+
 export interface AuthManagerDeps {
   oauth?: CodexOAuthDeps;
+  claudeOauth?: ClaudeOAuthDeps;
 }
 
 export class AuthManager {
   private readonly home: string;
   private readonly oauthDeps: ReturnType<typeof resolveOAuthDeps>;
+  private readonly claudeOauthDeps: ReturnType<typeof resolveClaudeOAuthDeps>;
   private cachedCodex: CodexCredentials | null = null;
   private cachedMtimeMs = 0;
+  private cachedClaude: ClaudeCredentials | null = null;
+  private cachedClaudeMtimeMs = 0;
   private inflightRefresh: Promise<void> | null = null;
+  private inflightClaudeRefresh: Promise<void> | null = null;
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private claudeRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   private refreshFailureHint: string | undefined;
+  private claudeRefreshFailureHint: string | undefined;
 
   constructor(home: string, deps: AuthManagerDeps = {}) {
     this.home = home;
     this.oauthDeps = resolveOAuthDeps(deps.oauth);
+    this.claudeOauthDeps = resolveClaudeOAuthDeps(deps.claudeOauth);
   }
 
   status(): AuthStatusSummary {
     return {
       codex: this.inspectCodex(),
-      claude: claudeStubStatus(),
+      claude: this.inspectClaude(),
     };
   }
 
   async login(provider?: Provider): Promise<void> {
     const targets = resolveLoginTargets(provider);
     for (const target of targets) {
-      if (target === "claude") {
-        console.log("Claude auth is not available yet (slice 06). Skipping.");
-        continue;
+      if (target === "codex") {
+        await this.loginCodex();
+      } else {
+        await this.loginClaude();
       }
-      await this.loginCodex();
     }
   }
 
@@ -106,6 +142,48 @@ export class AuthManager {
     return credentials;
   }
 
+  async getClaudeCredentials(): Promise<ClaudeCredentials> {
+    const resolved = this.resolveClaudeStore();
+    if (!resolved) {
+      throw new Error("Claude is not authenticated. Run: eport auth login claude");
+    }
+
+    const credentials = credentialsFromClaudeAuthFile(
+      resolved.auth,
+      resolved.source,
+      resolved.path,
+    );
+    this.cachedClaude = credentials;
+    this.cachedClaudeMtimeMs = resolved.mtimeMs;
+
+    if (
+      claudeNeedsProactiveRefresh(resolved.auth) &&
+      !isClaudeAccessTokenExpired(resolved.auth)
+    ) {
+      this.scheduleClaudeBackgroundRefresh();
+      return credentials;
+    }
+
+    if (isClaudeAccessTokenExpired(resolved.auth)) {
+      await this.coalescedClaudeRefresh();
+      const refreshed = this.resolveClaudeStore();
+      if (!refreshed) {
+        throw new Error("Claude credentials expired. Run: eport auth login claude");
+      }
+      const next = credentialsFromClaudeAuthFile(
+        refreshed.auth,
+        refreshed.source,
+        refreshed.path,
+      );
+      this.cachedClaude = next;
+      this.cachedClaudeMtimeMs = refreshed.mtimeMs;
+      return next;
+    }
+
+    this.scheduleClaudeProactiveTimer(credentials.expiresAt);
+    return credentials;
+  }
+
   private inspectCodex(): ProviderAuthStatus {
     const resolved = this.resolveCodexStore();
     if (!resolved) {
@@ -139,6 +217,42 @@ export class AuthManager {
     };
   }
 
+  private inspectClaude(): ProviderAuthStatus {
+    const resolved = this.resolveClaudeStore();
+    if (!resolved) {
+      return {
+        provider: "claude",
+        authenticated: false,
+        source: "none",
+        expiresAt: null,
+        needsRefresh: false,
+        guidance:
+          "Run `eport auth login claude` (or `claude login` to reuse CLI credentials).",
+      };
+    }
+
+    const expiresAt = credentialsFromClaudeAuthFile(
+      resolved.auth,
+      resolved.source,
+      resolved.path,
+    ).expiresAt;
+    const authenticated = !isClaudeAccessTokenExpired(resolved.auth);
+    const needsRefresh =
+      claudeNeedsProactiveRefresh(resolved.auth) || !authenticated;
+
+    return {
+      provider: "claude",
+      authenticated,
+      source: resolved.source,
+      expiresAt: expiresAt > 0 ? expiresAt : null,
+      needsRefresh,
+      storePath: resolved.path,
+      guidance:
+        this.claudeRefreshFailureHint ??
+        (needsRefresh ? CLAUDE_REFRESH_TOKEN_EXPIRED_HINT : undefined),
+    };
+  }
+
   private async loginCodex(): Promise<void> {
     const cliPath = getCodexCliAuthPath(this.home);
     const cliAuth = readCodexAuthFile(cliPath);
@@ -169,6 +283,38 @@ export class AuthManager {
     this.invalidateCache();
     this.refreshFailureHint = undefined;
     this.scheduleProactiveTimerFromStore();
+  }
+
+  private async loginClaude(): Promise<void> {
+    const cliPath = getClaudeCliCredentialsPath(this.home);
+    const cliAuth = readClaudeAuthFile(cliPath);
+    if (cliAuth && isClaudeAccessTokenFresh(cliAuth)) {
+      console.log(`Claude: reusing fresh CLI credentials (${cliPath})`);
+      this.invalidateClaudeCache();
+      this.scheduleClaudeProactiveTimerFromStore();
+      return;
+    }
+
+    const eportPath = getEportClaudeAuthPath(this.home);
+    const eportAuth = readClaudeAuthFile(eportPath);
+    if (eportAuth && isClaudeAccessTokenFresh(eportAuth)) {
+      console.log(`Claude: reusing fresh ePort OAuth credentials (${eportPath})`);
+      this.invalidateClaudeCache();
+      this.scheduleClaudeProactiveTimerFromStore();
+      return;
+    }
+
+    await runClaudeOAuthLogin(this.home, {
+      deps: {
+        fetchFn: this.claudeOauthDeps.fetchFn,
+        openBrowser: this.claudeOauthDeps.openBrowser,
+        loginWithPkce: this.claudeOauthDeps.loginWithPkce,
+      },
+    });
+    console.log(`Claude: saved ePort OAuth credentials (${eportPath})`);
+    this.invalidateClaudeCache();
+    this.claudeRefreshFailureHint = undefined;
+    this.scheduleClaudeProactiveTimerFromStore();
   }
 
   private resolveCodexStore(): ResolvedCodexStore | null {
@@ -222,6 +368,84 @@ export class AuthManager {
     return null;
   }
 
+  private resolveClaudeStore(): ResolvedClaudeStore | null {
+    const cliPath = getClaudeCliCredentialsPath(this.home);
+    const eportPath = getEportClaudeAuthPath(this.home);
+    const cliAuth = readClaudeAuthFile(cliPath);
+    const eportAuth = readClaudeAuthFile(eportPath);
+
+    const candidates: ResolvedClaudeStore[] = [];
+    if (cliAuth) {
+      candidates.push({
+        source: "cli",
+        path: cliPath,
+        auth: cliAuth,
+        mtimeMs: getFileMtimeMs(cliPath),
+      });
+    }
+    if (eportAuth) {
+      candidates.push({
+        source: "eport-oauth",
+        path: eportPath,
+        auth: eportAuth,
+        mtimeMs: getFileMtimeMs(eportPath),
+      });
+    }
+
+    const freshCli = candidates.find(
+      (entry) => entry.source === "cli" && isClaudeAccessTokenFresh(entry.auth),
+    );
+    if (freshCli) return this.withClaudeCache(freshCli);
+
+    const freshEport = candidates.find(
+      (entry) =>
+        entry.source === "eport-oauth" && isClaudeAccessTokenFresh(entry.auth),
+    );
+    if (freshEport) return this.withClaudeCache(freshEport);
+
+    const refreshableCli = candidates.find(
+      (entry) =>
+        entry.source === "cli" && entry.auth.claudeAiOauth.refreshToken.length > 0,
+    );
+    if (refreshableCli) return this.withClaudeCache(refreshableCli);
+
+    const refreshableEport = candidates.find(
+      (entry) =>
+        entry.source === "eport-oauth" &&
+        entry.auth.claudeAiOauth.refreshToken.length > 0,
+    );
+    if (refreshableEport) return this.withClaudeCache(refreshableEport);
+
+    return null;
+  }
+
+  private withClaudeCache(entry: ResolvedClaudeStore): ResolvedClaudeStore {
+    if (
+      this.cachedClaude &&
+      this.cachedClaude.storePath === entry.path &&
+      this.cachedClaudeMtimeMs === entry.mtimeMs
+    ) {
+      return {
+        ...entry,
+        auth: this.claudeAuthFileFromCache(entry.auth),
+      };
+    }
+    return entry;
+  }
+
+  private claudeAuthFileFromCache(fallback: ClaudeAuthFile): ClaudeAuthFile {
+    if (!this.cachedClaude) return fallback;
+    return {
+      ...fallback,
+      claudeAiOauth: {
+        accessToken: this.cachedClaude.accessToken,
+        refreshToken: this.cachedClaude.refreshToken,
+        expiresAt: this.cachedClaude.expiresAt,
+      },
+      last_refresh: fallback.last_refresh ?? new Date().toISOString(),
+    };
+  }
+
   private withCache(entry: ResolvedCodexStore): ResolvedCodexStore {
     if (
       this.cachedCodex &&
@@ -259,6 +483,15 @@ export class AuthManager {
     });
   }
 
+  private scheduleClaudeBackgroundRefresh(): void {
+    void this.coalescedClaudeRefresh().catch((error) => {
+      this.claudeRefreshFailureHint =
+        error instanceof Error && (error as Error & { code?: string }).code === "refresh_token_expired"
+          ? CLAUDE_REFRESH_TOKEN_EXPIRED_HINT
+          : String(error);
+    });
+  }
+
   private scheduleProactiveTimerFromStore(): void {
     const resolved = this.resolveCodexStore();
     if (!resolved) return;
@@ -268,6 +501,36 @@ export class AuthManager {
       resolved.path,
     ).expiresAt;
     this.scheduleProactiveTimer(expiresAt);
+  }
+
+  private scheduleClaudeProactiveTimerFromStore(): void {
+    const resolved = this.resolveClaudeStore();
+    if (!resolved) return;
+    const expiresAt = credentialsFromClaudeAuthFile(
+      resolved.auth,
+      resolved.source,
+      resolved.path,
+    ).expiresAt;
+    this.scheduleClaudeProactiveTimer(expiresAt);
+  }
+
+  private scheduleClaudeProactiveTimer(expiresAt: number): void {
+    if (this.claudeRefreshTimer) {
+      clearTimeout(this.claudeRefreshTimer);
+      this.claudeRefreshTimer = null;
+    }
+    if (expiresAt <= 0) return;
+
+    const delay = Math.max(
+      0,
+      expiresAt - REFRESH_SAFETY_WINDOW_MS - Date.now(),
+    );
+    const timer = setTimeout(() => {
+      this.claudeRefreshTimer = null;
+      this.scheduleClaudeBackgroundRefresh();
+    }, delay);
+    if (typeof timer.unref === "function") timer.unref();
+    this.claudeRefreshTimer = timer;
   }
 
   private scheduleProactiveTimer(expiresAt: number): void {
@@ -295,6 +558,14 @@ export class AuthManager {
       this.inflightRefresh = null;
     });
     return this.inflightRefresh;
+  }
+
+  private coalescedClaudeRefresh(): Promise<void> {
+    if (this.inflightClaudeRefresh) return this.inflightClaudeRefresh;
+    this.inflightClaudeRefresh = this.refreshClaudeOnce().finally(() => {
+      this.inflightClaudeRefresh = null;
+    });
+    return this.inflightClaudeRefresh;
   }
 
   private async refreshOnce(): Promise<void> {
@@ -329,14 +600,52 @@ export class AuthManager {
     this.scheduleProactiveTimer(this.cachedCodex.expiresAt);
   }
 
+  private async refreshClaudeOnce(): Promise<void> {
+    const resolved = this.resolveClaudeStore();
+    if (!resolved) {
+      throw new Error("No Claude credentials to refresh");
+    }
+
+    const refreshToken = resolved.auth.claudeAiOauth.refreshToken;
+    if (!refreshToken) {
+      throw new Error("Claude credentials have no refresh_token");
+    }
+
+    const tokens = await this.claudeOauthDeps.exchangeRefreshToken(
+      refreshToken,
+      this.claudeOauthDeps.fetchFn,
+    );
+    const merged = tokenResponseToClaudeAuthFile(tokens);
+
+    writeClaudeAuthFile(resolved.path, merged);
+    this.cachedClaude = credentialsFromClaudeAuthFile(
+      merged,
+      resolved.source,
+      resolved.path,
+    );
+    this.cachedClaudeMtimeMs = getFileMtimeMs(resolved.path);
+    this.claudeRefreshFailureHint = undefined;
+    this.scheduleClaudeProactiveTimer(this.cachedClaude.expiresAt);
+  }
+
   private invalidateCache(): void {
     this.cachedCodex = null;
     this.cachedMtimeMs = 0;
   }
 
+  private invalidateClaudeCache(): void {
+    this.cachedClaude = null;
+    this.cachedClaudeMtimeMs = 0;
+  }
+
   /** Test hook: count in-flight refresh operations. */
   get inflightRefreshCount(): number {
     return this.inflightRefresh ? 1 : 0;
+  }
+
+  /** Test hook: count in-flight Claude refresh operations. */
+  get inflightClaudeRefreshCount(): number {
+    return this.inflightClaudeRefresh ? 1 : 0;
   }
 }
 
@@ -344,17 +653,6 @@ function resolveLoginTargets(provider?: Provider): Provider[] {
   if (provider === "codex") return ["codex"];
   if (provider === "claude") return ["claude"];
   return ["codex", "claude"];
-}
-
-function claudeStubStatus(): ProviderAuthStatus {
-  return {
-    provider: "claude",
-    authenticated: false,
-    source: "none",
-    expiresAt: null,
-    needsRefresh: false,
-    guidance: "Claude auth ships in slice 06. Run `eport auth login claude` later.",
-  };
 }
 
 export function formatAuthStatus(
@@ -388,7 +686,11 @@ function capitalize(value: string): string {
 }
 
 function formatSource(row: ProviderAuthStatus): string {
-  if (row.source === "cli") return "CLI reuse (~/.codex/auth.json)";
+  if (row.source === "cli") {
+    return row.provider === "claude"
+      ? "CLI reuse (~/.claude/.credentials.json)"
+      : "CLI reuse (~/.codex/auth.json)";
+  }
   if (row.source === "eport-oauth") return "ePort OAuth";
   return "none";
 }

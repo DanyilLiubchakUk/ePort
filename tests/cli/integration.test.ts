@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
+import { makeClaudeAuthFile } from "../auth/helpers.ts";
+
 const repoRoot = join(import.meta.dir, "..", "..");
 const cliEntry = join(repoRoot, "src", "cli", "index.ts");
 
@@ -191,6 +193,27 @@ describe("CLI integration", () => {
     const status = runEport(["auth", "status"], home);
     expect(status.status).toBe(0);
     expect(status.stdout).toContain("Codex:");
+    expect(status.stdout).toContain("ePort OAuth");
+    expect(status.stdout).toContain("authenticated");
+
+    rmSync(fixtureDir, { recursive: true, force: true });
+  });
+
+  it("auth status after mocked Claude login shows Claude ePort OAuth row", () => {
+    home = mkdtempSync(join(tmpdir(), "eport-cli-"));
+    const fixtureDir = mkdtempSync(join(tmpdir(), "eport-claude-oauth-fixture-"));
+    const fixturePath = join(fixtureDir, "claude.json");
+    const fixture = makeClaudeAuthFile(Date.now() + 3_600_000);
+    writeFileSync(fixturePath, `${JSON.stringify(fixture, null, 2)}\n`, "utf8");
+
+    const login = runEport(["auth", "login", "claude"], home, {
+      EPORT_TEST_CLAUDE_OAUTH_FIXTURE: fixturePath,
+    });
+    expect(login.status).toBe(0);
+
+    const status = runEport(["auth", "status"], home);
+    expect(status.status).toBe(0);
+    expect(status.stdout).toContain("Claude:");
     expect(status.stdout).toContain("ePort OAuth");
     expect(status.stdout).toContain("authenticated");
 
