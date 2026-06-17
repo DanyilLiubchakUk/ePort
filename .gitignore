@@ -1,0 +1,15 @@
+# Reference clones — re-fetch with scripts/clone-vendors.sh
+vendors/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Runtime
+node_modules/
+dist/
+target/
+*.log
+.env
+.env.*
