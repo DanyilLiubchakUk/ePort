@@ -8,7 +8,7 @@ import {
 
 export const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 
-const CLAUDE_CODE_BETA_HEADERS =
+export const CLAUDE_CODE_BETA_HEADERS =
   "claude-code-20250219,oauth-2025-04-20,fine-grained-tool-streaming-2025-05-14,interleaved-thinking-2025-05-14";
 
 export type FetchFn = (

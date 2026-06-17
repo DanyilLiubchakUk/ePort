@@ -78,6 +78,7 @@ export class AuthManager {
   private claudeRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   private refreshFailureHint: string | undefined;
   private claudeRefreshFailureHint: string | undefined;
+  private catalog: { invalidate(): void } | null = null;
 
   constructor(home: string, deps: AuthManagerDeps = {}) {
     this.home = home;
@@ -90,6 +91,10 @@ export class AuthManager {
       codex: this.inspectCodex(),
       claude: this.inspectClaude(),
     };
+  }
+
+  setCatalog(catalog: { invalidate(): void }): void {
+    this.catalog = catalog;
   }
 
   async login(provider?: Provider): Promise<void> {
@@ -259,6 +264,7 @@ export class AuthManager {
     if (cliAuth && isAccessTokenFresh(cliAuth.tokens.access_token)) {
       console.log(`Codex: reusing fresh CLI credentials (${cliPath})`);
       this.invalidateCache();
+      this.catalog?.invalidate();
       this.scheduleProactiveTimerFromStore();
       return;
     }
@@ -268,6 +274,7 @@ export class AuthManager {
     if (eportAuth && isAccessTokenFresh(eportAuth.tokens.access_token)) {
       console.log(`Codex: reusing fresh ePort OAuth credentials (${eportPath})`);
       this.invalidateCache();
+      this.catalog?.invalidate();
       this.scheduleProactiveTimerFromStore();
       return;
     }
@@ -282,6 +289,7 @@ export class AuthManager {
     console.log(`Codex: saved ePort OAuth credentials (${eportPath})`);
     this.invalidateCache();
     this.refreshFailureHint = undefined;
+    this.catalog?.invalidate();
     this.scheduleProactiveTimerFromStore();
   }
 
@@ -291,6 +299,7 @@ export class AuthManager {
     if (cliAuth && isClaudeAccessTokenFresh(cliAuth)) {
       console.log(`Claude: reusing fresh CLI credentials (${cliPath})`);
       this.invalidateClaudeCache();
+      this.catalog?.invalidate();
       this.scheduleClaudeProactiveTimerFromStore();
       return;
     }
@@ -300,6 +309,7 @@ export class AuthManager {
     if (eportAuth && isClaudeAccessTokenFresh(eportAuth)) {
       console.log(`Claude: reusing fresh ePort OAuth credentials (${eportPath})`);
       this.invalidateClaudeCache();
+      this.catalog?.invalidate();
       this.scheduleClaudeProactiveTimerFromStore();
       return;
     }
@@ -314,6 +324,7 @@ export class AuthManager {
     console.log(`Claude: saved ePort OAuth credentials (${eportPath})`);
     this.invalidateClaudeCache();
     this.claudeRefreshFailureHint = undefined;
+    this.catalog?.invalidate();
     this.scheduleClaudeProactiveTimerFromStore();
   }
 

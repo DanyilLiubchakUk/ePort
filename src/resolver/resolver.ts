@@ -1,4 +1,6 @@
 import type { ConfigProfile, SessionFlags } from "../config/types.ts";
+import type { ModelCatalog } from "./catalog.ts";
+import type { OpenAIModelList } from "./catalog-types.ts";
 import { normalizeAlias, isKnownBareModel } from "./aliases.ts";
 import { extractBodyEffort, extractBodyFastTier } from "./body.ts";
 import { parseFullModelSuffix, parseRemainderSuffix } from "./suffix.ts";
@@ -157,6 +159,8 @@ export function resolveModel(
 }
 
 export class ModelResolver {
+  constructor(private readonly catalog?: ModelCatalog) {}
+
   resolve(
     model: string,
     body: unknown,
@@ -165,4 +169,15 @@ export class ModelResolver {
   ): ResolvedRoute {
     return resolveModel(model, body, config, options);
   }
+
+  async listModels(): Promise<OpenAIModelList> {
+    if (this.catalog) {
+      return this.catalog.listModels();
+    }
+    return emptyModelList();
+  }
+}
+
+function emptyModelList(): OpenAIModelList {
+  return { object: "list", data: [] };
 }

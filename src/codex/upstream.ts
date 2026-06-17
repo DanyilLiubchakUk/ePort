@@ -10,8 +10,8 @@ import {
 export const CODEX_RESPONSES_URL =
   "https://chatgpt.com/backend-api/codex/responses";
 
-const ORIGINATOR = "codex_cli_rs";
-const CODEX_USER_AGENT_VERSION = "0.120.0";
+export const ORIGINATOR = "codex_cli_rs";
+export const CODEX_USER_AGENT_VERSION = "0.120.0";
 const DEFAULT_CONCURRENCY_LIMIT = 10;
 
 export type FetchFn = (

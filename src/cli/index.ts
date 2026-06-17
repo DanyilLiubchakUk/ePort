@@ -10,6 +10,7 @@ import {
   runNotImplemented,
   runUp,
 } from "./commands.ts";
+import { runStatus } from "./status.ts";
 import {
   getPackageVersion,
   GLOBAL_FLAGS_HELP,
@@ -19,7 +20,7 @@ import {
 import { parseArgv } from "./parser.ts";
 import { runTunnel } from "./tunnel-commands.ts";
 
-const IMPLEMENTED_COMMANDS = new Set(["init", "api-key", "auth", "up", "tunnel"]);
+const IMPLEMENTED_COMMANDS = new Set(["init", "api-key", "auth", "up", "tunnel", "status"]);
 
 function printHelp(command?: string, subcommand?: string): void {
   const text = helpForCommand(command, subcommand);
@@ -105,6 +106,11 @@ export async function runCli(argv: string[], home = homedir()): Promise<number> 
     }
     case "up":
       return runUp(store, home, parsed.session, parsed.port);
+    case "status":
+      return runStatus(home, {
+        json: parsed.json,
+        verbose: parsed.session.verbose,
+      });
     case "tunnel":
       return runTunnel(store, parsed.subcommand, parsed.rest, {
         token: parsed.token,

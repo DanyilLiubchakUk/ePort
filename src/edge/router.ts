@@ -17,13 +17,6 @@ import {
 import { logRequestSummary } from "./log.ts";
 import { passthroughSseResponse, translateResponsesSseToChat } from "./stream.ts";
 
-const CODEX_MODEL_STUBS = [
-  "gpt-5.5",
-  "gpt-5.4",
-  "gpt-5.3-codex",
-  "gpt-5.2",
-];
-
 export type EdgeShape = "chat" | "responses";
 
 export interface EdgeRouterDeps {
@@ -57,7 +50,7 @@ export function createEdgeHandler(deps: EdgeRouterDeps) {
 
     try {
       if (url.pathname === "/v1/models" && req.method === "GET") {
-        return withCors(handleListModels());
+        return withCors(await handleListModels(deps));
       }
 
       if (url.pathname === "/v1/chat/completions" && req.method === "POST") {
@@ -462,15 +455,7 @@ function isResponsesShapedBody(
   return edgeShape === "chat" && Array.isArray(body.messages);
 }
 
-function handleListModels(): Response {
-  const created = Math.floor(Date.now() / 1000);
-  return Response.json({
-    object: "list",
-    data: CODEX_MODEL_STUBS.map((id) => ({
-      id,
-      object: "model",
-      created,
-      owned_by: "eport",
-    })),
-  });
+async function handleListModels(deps: EdgeRouterDeps): Promise<Response> {
+  const list = await deps.resolver.listModels();
+  return Response.json(list);
 }

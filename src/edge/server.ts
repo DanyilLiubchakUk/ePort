@@ -2,7 +2,7 @@ import { AuthManager } from "../auth/manager.ts";
 import { ClaudeUpstreamClient } from "../claude/index.ts";
 import { CodexUpstreamClient } from "../codex/index.ts";
 import type { ConfigProfile, SessionFlags, TunnelMode } from "../config/types.ts";
-import { ModelResolver } from "../resolver/index.ts";
+import { ModelCatalog, ModelResolver } from "../resolver/index.ts";
 import { createEdgeHandler } from "./router.ts";
 
 export interface EdgeServerOptions {
@@ -17,6 +17,8 @@ export interface EdgeServerOptions {
   codexUpstream?: CodexUpstreamClient;
   claudeUpstream?: ClaudeUpstreamClient;
   auth?: AuthManager;
+  catalog?: ModelCatalog;
+  resolver?: ModelResolver;
 }
 
 export interface EdgeServerHandle {
@@ -31,7 +33,18 @@ export function startEdgeServer(options: EdgeServerOptions): EdgeServerHandle {
   const auth = options.auth ?? new AuthManager(options.home);
   const codexUpstream = options.codexUpstream ?? new CodexUpstreamClient();
   const claudeUpstream = options.claudeUpstream ?? new ClaudeUpstreamClient();
-  const resolver = new ModelResolver();
+  const catalog =
+    options.catalog ??
+    new ModelCatalog({
+      home: options.home,
+      auth,
+    });
+  const ownsCatalog = !options.catalog;
+  if (ownsCatalog) {
+    auth.setCatalog(catalog);
+    catalog.start();
+  }
+  const resolver = options.resolver ?? new ModelResolver(catalog);
 
   const handler = createEdgeHandler({
     auth,
@@ -58,6 +71,9 @@ export function startEdgeServer(options: EdgeServerOptions): EdgeServerHandle {
     host,
     port,
     baseUrl: `http://${host}:${port}/v1`,
-    stop: () => server.stop(),
+    stop: () => {
+      if (ownsCatalog) catalog.stop();
+      server.stop();
+    },
   };
 }

@@ -43,6 +43,38 @@ const SORTED_STATIC_ALIASES = [...STATIC_ALIASES].sort(
   (left, right) => right.alias.length - left.alias.length,
 );
 
+export function listStaticAliasIds(): string[] {
+  return STATIC_ALIASES.map((entry) => entry.alias);
+}
+
+export function bareModelIdForCanonical(
+  provider: Provider,
+  canonicalModelId: string,
+): string {
+  for (const entry of STATIC_ALIASES) {
+    if (entry.provider === provider && entry.canonicalModelId === canonicalModelId) {
+      return entry.bareModelId ?? entry.canonicalModelId;
+    }
+  }
+  return canonicalModelId;
+}
+
+let catalogBareModels: Map<Provider, Set<string>> | null = null;
+
+export function registerCatalogBareModels(models: Array<{ provider: Provider; bareModelId: string }>): void {
+  const next = new Map<Provider, Set<string>>();
+  for (const model of models) {
+    const bucket = next.get(model.provider) ?? new Set<string>();
+    bucket.add(model.bareModelId);
+    next.set(model.provider, bucket);
+  }
+  catalogBareModels = next;
+}
+
+export function clearCatalogBareModels(): void {
+  catalogBareModels = null;
+}
+
 function fromEntry(entry: AliasEntry, remainder = ""): AliasMatch {
   return {
     provider: entry.provider,
@@ -126,6 +158,11 @@ export function inferProvider(modelId: string): Provider | null {
 }
 
 export function isKnownBareModel(provider: Provider, bareModelId: string): boolean {
+  const catalog = catalogBareModels?.get(provider);
+  if (catalog?.has(bareModelId)) {
+    return true;
+  }
+
   if (provider === "codex") {
     return /^(gpt-|o\d|chatgpt-)/i.test(bareModelId);
   }
