@@ -1,0 +1,185 @@
+export type AnthropicContentBlock =
+  | { type: "text"; text: string }
+  | { type: "image"; source: { type: "url"; url: string } | { type: "base64"; media_type: string; data: string } }
+  | { type: "tool_use"; id: string; name: string; input: unknown }
+  | { type: "tool_result"; tool_use_id: string; content: string };
+
+export interface NormalizedClaudeMessage {
+  role: "user" | "assistant";
+  content: string | AnthropicContentBlock[];
+}
+
+export interface NormalizedClaudeRequest {
+  messages: NormalizedClaudeMessage[];
+  system?: string;
+  stream: boolean;
+  tools?: unknown[];
+  toolChoice?: unknown;
+}
+
+function readRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function readString(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function partFromOpenAi(value: unknown): AnthropicContentBlock | null {
+  const record = readRecord(value);
+  if (!record) return null;
+  const type = readString(record.type);
+  if (type === "text" || type === "input_text") {
+    const text = readString(record.text);
+    return text ? { type: "text", text } : null;
+  }
+  if (type === "input_image" || type === "image_url") {
+    const imageUrl = readRecord(record.image_url);
+    const url = imageUrl ? readString(imageUrl.url) : readString(record.url);
+    if (url) return { type: "image", source: { type: "url", url } };
+  }
+  return null;
+}
+
+function contentFromItem(content: unknown): string | AnthropicContentBlock[] {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  const blocks = content
+    .map((part) => partFromOpenAi(part))
+    .filter((part): part is AnthropicContentBlock => part !== null);
+  return blocks.length > 0 ? blocks : "";
+}
+
+function normalizeInputArray(input: unknown[]): NormalizedClaudeRequest {
+  const messages: NormalizedClaudeMessage[] = [];
+  const systemParts: string[] = [];
+
+  for (const item of input) {
+    const record = readRecord(item);
+    if (!record) continue;
+
+    const role = readString(record.role);
+    if (role === "system" || role === "developer") {
+      const text = contentFromItem(record.content);
+      if (typeof text === "string" && text.trim()) {
+        systemParts.push(text.trim());
+      }
+      continue;
+    }
+
+    if (role === "user" || role === "assistant") {
+      messages.push({
+        role,
+        content: contentFromItem(record.content),
+      });
+      continue;
+    }
+
+    if (record.type === "function_call") {
+      const callId = readString(record.call_id) ?? crypto.randomUUID();
+      const name = readString(record.name) ?? "tool";
+      let parsedInput: unknown = {};
+      const args = readString(record.arguments);
+      if (args) {
+        try {
+          parsedInput = JSON.parse(args) as unknown;
+        } catch {
+          parsedInput = {};
+        }
+      }
+      const toolUse: AnthropicContentBlock = {
+        type: "tool_use",
+        id: callId,
+        name,
+        input: parsedInput,
+      };
+      const last = messages.at(-1);
+      if (last?.role === "assistant" && Array.isArray(last.content)) {
+        last.content.push(toolUse);
+      } else {
+        messages.push({ role: "assistant", content: [toolUse] });
+      }
+      continue;
+    }
+
+    if (record.type === "function_call_output") {
+      const callId = readString(record.call_id) ?? "";
+      const output = readString(record.output) ?? "";
+      const toolResult: AnthropicContentBlock = {
+        type: "tool_result",
+        tool_use_id: callId,
+        content: output,
+      };
+      const last = messages.at(-1);
+      if (last?.role === "user" && Array.isArray(last.content)) {
+        last.content.push(toolResult);
+      } else {
+        messages.push({ role: "user", content: [toolResult] });
+      }
+    }
+  }
+
+  return {
+    messages: messages.length > 0 ? messages : [{ role: "user", content: "" }],
+    system: systemParts.length > 0 ? systemParts.join("\n\n") : undefined,
+    stream: true,
+  };
+}
+
+function normalizeMessagesArray(messages: unknown[]): NormalizedClaudeRequest {
+  const normalized: NormalizedClaudeMessage[] = [];
+  const systemParts: string[] = [];
+
+  for (const item of messages) {
+    const record = readRecord(item);
+    if (!record) continue;
+    const role = readString(record.role);
+    if (role === "system" || role === "developer") {
+      const text = contentFromItem(record.content);
+      if (typeof text === "string" && text.trim()) {
+        systemParts.push(text.trim());
+      }
+      continue;
+    }
+    if (role === "user" || role === "assistant") {
+      normalized.push({
+        role,
+        content: contentFromItem(record.content),
+      });
+    }
+  }
+
+  return {
+    messages:
+      normalized.length > 0 ? normalized : [{ role: "user", content: "" }],
+    system: systemParts.length > 0 ? systemParts.join("\n\n") : undefined,
+    stream: true,
+  };
+}
+
+export function normalizeEdgeBody(body: Record<string, unknown>): NormalizedClaudeRequest {
+  const stream = body.stream !== false;
+  const tools = Array.isArray(body.tools) ? body.tools : undefined;
+  const toolChoice = body.tool_choice;
+
+  let normalized: NormalizedClaudeRequest;
+  if (Array.isArray(body.input)) {
+    normalized = normalizeInputArray(body.input);
+  } else if (Array.isArray(body.messages)) {
+    normalized = normalizeMessagesArray(body.messages);
+  } else {
+    normalized = { messages: [{ role: "user", content: "" }], stream: true };
+  }
+
+  if (typeof body.instructions === "string" && body.instructions.trim()) {
+    normalized.system = normalized.system
+      ? `${normalized.system}\n\n${body.instructions.trim()}`
+      : body.instructions.trim();
+  }
+
+  normalized.stream = stream;
+  if (tools) normalized.tools = tools;
+  if (toolChoice !== undefined) normalized.toolChoice = toolChoice;
+  return normalized;
+}
