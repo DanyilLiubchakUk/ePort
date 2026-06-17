@@ -1,7 +1,7 @@
 export function passthroughSseResponse(
   upstream: Response,
   _signal?: AbortSignal,
-  options: { onFinish?: (finish: "stop" | "tool_calls") => void } = {},
+  options: ResponsesSseObserverOptions = {},
 ): Response {
   const headers = new Headers(upstream.headers);
   headers.set("content-type", "text/event-stream; charset=utf-8");
@@ -19,7 +19,7 @@ export function passthroughSseResponse(
 
 function observeResponsesPassthrough(
   body: ReadableStream<Uint8Array>,
-  options: { onFinish?: (finish: "stop" | "tool_calls") => void },
+  options: ResponsesSseObserverOptions,
 ): ReadableStream<Uint8Array> {
   let buffer = "";
   let hadToolCall = false;
@@ -46,7 +46,9 @@ function observeResponsesPassthrough(
             hadToolCall = true;
           }
           if (event.type === "response.completed") {
-            options.onFinish?.(hadToolCall ? "tool_calls" : "stop");
+            const finish = hadToolCall ? "tool_calls" : "stop";
+            emitCompletedUsage(event, finish, options);
+            options.onFinish?.(finish);
           }
         }
       },
@@ -54,10 +56,24 @@ function observeResponsesPassthrough(
   );
 }
 
-interface ChatTranslationOptions {
+export type CodexStreamFinish = "stop" | "tool_calls";
+
+export interface CodexCompletedUsageCapture {
+  event: Record<string, unknown>;
+  response: Record<string, unknown>;
+  responseId: string | null;
+  usage: Record<string, unknown>;
+  finish: CodexStreamFinish;
+}
+
+interface ResponsesSseObserverOptions {
+  onFinish?: (finish: CodexStreamFinish) => void;
+  onUsage?: (capture: CodexCompletedUsageCapture) => void;
+}
+
+interface ChatTranslationOptions extends ResponsesSseObserverOptions {
   model: string;
   signal?: AbortSignal;
-  onFinish?: (finish: "stop" | "tool_calls") => void;
   onUnhandledEvent?: (eventType: string) => void;
 }
 
@@ -228,7 +244,11 @@ function formatChatCompletionEvent(
       return formatToolCallDone(event, state) ?? formatReasoningItem(event, state);
 
     case "response.completed":
-      options.onFinish?.(state.hadToolCall ? "tool_calls" : "stop");
+      {
+        const finish = state.hadToolCall ? "tool_calls" : "stop";
+        emitCompletedUsage(event, finish, options);
+        options.onFinish?.(finish);
+      }
       return (
         formatAssistantRoleChunk(state) +
         formatChatCompletionChunk(state, {}, state.hadToolCall ? "tool_calls" : "stop")
@@ -258,6 +278,33 @@ function updateChatCompletionState(
   if (typeof createdAt === "number" && Number.isFinite(createdAt)) {
     state.created = Math.floor(createdAt);
   }
+}
+
+function emitCompletedUsage(
+  event: Record<string, unknown>,
+  finish: CodexStreamFinish,
+  options: ResponsesSseObserverOptions,
+): void {
+  const response = readRecord(event.response);
+  const usage = readRecord(response?.usage);
+  if (!response || !usage) return;
+
+  try {
+    options.onUsage?.({
+      event,
+      response,
+      responseId: typeof response.id === "string" ? response.id : null,
+      usage,
+      finish,
+    });
+  } catch {
+    // Observer failures must not corrupt the client stream.
+  }
+}
+
+function readRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
 }
 
 function formatAssistantRoleChunk(state: ChatCompletionStreamState): string {

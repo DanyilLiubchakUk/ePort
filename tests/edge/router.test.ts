@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { ClaudeUpstreamClient, type FetchFn as ClaudeFetchFn } from "../../src/claude/index.ts";
 import { CodexUpstreamClient, type FetchFn } from "../../src/codex/index.ts";
@@ -9,6 +10,13 @@ import { getAccountAuthPath } from "../../src/auth/accounts-paths.ts";
 import { writeCodexAuthFile } from "../../src/auth/codex-file.ts";
 import { emptyConfigProfile } from "../../src/config/types.ts";
 import { startEdgeServer } from "../../src/edge/index.ts";
+import {
+  getCodexEportDailySnapshotPath,
+  getCodexEportRawEventsPath,
+  getCodexEportSessionFilePath,
+  providerAccountFingerprintFor,
+  type CodexUsageRecorder,
+} from "../../src/usage/codex.ts";
 import {
   makeClaudeAuthFile,
   makeCodexAuthFile,
@@ -67,6 +75,7 @@ describe("edge router", () => {
     verbose?: boolean;
     codexFetchFn?: FetchFn;
     claudeFetchFn?: ClaudeFetchFn;
+    codexUsageRecorder?: CodexUsageRecorder;
   } = {}) {
     home = mkdtempSync(`${tmpdir()}/eport-edge-`);
     writeEportAuth(home, makeCodexAuthFile(secondsFromNow(3600)));
@@ -115,6 +124,7 @@ describe("edge router", () => {
       codexUpstream,
       claudeUpstream,
       verbose: options.verbose,
+      codexUsageRecorder: options.codexUsageRecorder,
     });
 
     return { baseUrl: `http://${server.host}:${server.port}` };
@@ -221,6 +231,195 @@ describe("edge router", () => {
     });
     expect(chat.status).toBe(200);
     expect(upstreamCalls).toBe(2);
+  });
+
+  it("records Codex Responses passthrough usage under the ePort account partition", async () => {
+    const completedAt = Date.parse("2026-06-17T15:00:00.000Z") / 1000;
+    const { baseUrl } = startTestServer({
+      codexFetchFn: async () =>
+        codexSseResponse([
+          { type: "response.output_text.delta", delta: "ok" },
+          {
+            type: "response.completed",
+            response: {
+              id: "resp_usage_stop",
+              status: "completed",
+              created_at: completedAt,
+              usage: {
+                input_tokens: 100,
+                input_tokens_details: { cached_tokens: 40 },
+                output_tokens: 25,
+                output_tokens_details: { reasoning_tokens: 10 },
+                total_tokens: 125,
+              },
+            },
+          },
+        ]),
+    });
+
+    const response = await fetch(`${baseUrl}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.5xhigh-fast",
+        input: [{ role: "user", content: "hello" }],
+        stream: true,
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    await response.text();
+
+    const fingerprint = providerAccountFingerprintFor("codex", "acct-test");
+    const rawEvents = readFileSync(getCodexEportRawEventsPath(home, fingerprint), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(rawEvents).toHaveLength(1);
+    expect(rawEvents[0]).toMatchObject({
+      provider: "codex",
+      providerAccountFingerprint: fingerprint,
+      responseId: "resp_usage_stop",
+      clientModel: "gpt-5.5xhigh-fast",
+      bareModelId: "gpt-5.5",
+      effort: "xhigh",
+      fastTier: true,
+      finish: "stop",
+      normalizedUsage: {
+        inputTokens: 100,
+        cachedInputTokens: 40,
+        outputTokens: 25,
+        reasoningOutputTokens: 10,
+        totalTokens: 125,
+      },
+    });
+
+    const snapshot = JSON.parse(
+      readFileSync(getCodexEportDailySnapshotPath(home, fingerprint, "2026-06-17"), "utf8"),
+    ) as Record<string, unknown>;
+    expect(snapshot).toMatchObject({
+      dataIdentity: `eport:codex:${fingerprint}:daily:2026-06-17`,
+      inputTokens: 100,
+      cachedInputTokens: 40,
+      outputTokens: 25,
+      reasoningOutputTokens: 10,
+      totalTokens: 125,
+    });
+    expect(
+      existsSync(getCodexEportSessionFilePath(home, fingerprint, "2026-06-17T15:00:00.000Z")),
+    ).toBe(true);
+    expect(existsSync(join(home, ".codex", "sessions"))).toBe(false);
+  });
+
+  it("records Codex chat translation usage once for tool-call completions", async () => {
+    const completedAt = Date.parse("2026-06-17T15:10:00.000Z") / 1000;
+    const toolEvents = functionCallStream().map((event) =>
+      event.type === "response.completed"
+        ? {
+            ...event,
+            response: {
+              id: "resp_usage_tool",
+              status: "completed",
+              created_at: completedAt,
+              usage: {
+                input_tokens: 200,
+                input_tokens_details: { cached_tokens: 75 },
+                output_tokens: 30,
+                output_tokens_details: { reasoning_tokens: 12 },
+                total_tokens: 230,
+              },
+            },
+          }
+        : event,
+    );
+    const { baseUrl } = startTestServer({
+      codexFetchFn: async () => codexSseResponse(toolEvents),
+    });
+
+    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        input: [{ role: "user", content: "use tool" }],
+        stream: true,
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    expect(text).toContain('"finish_reason":"tool_calls"');
+
+    const fingerprint = providerAccountFingerprintFor("codex", "acct-test");
+    const rawEvents = readFileSync(getCodexEportRawEventsPath(home, fingerprint), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(rawEvents).toHaveLength(1);
+    expect(rawEvents[0]).toMatchObject({
+      responseId: "resp_usage_tool",
+      finish: "tool_calls",
+      normalizedUsage: {
+        inputTokens: 200,
+        cachedInputTokens: 75,
+        outputTokens: 30,
+        reasoningOutputTokens: 12,
+        totalTokens: 230,
+      },
+    });
+  });
+
+  it("logs failed Codex usage writes without corrupting the client stream", async () => {
+    const errors: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+    };
+
+    try {
+      const { baseUrl } = startTestServer({
+        codexUsageRecorder: () => {
+          throw new Error("disk unavailable");
+        },
+        codexFetchFn: async () =>
+          codexSseResponse([
+            { type: "response.output_text.delta", delta: "still streams" },
+            {
+              type: "response.completed",
+              response: {
+                id: "resp_usage_fail",
+                status: "completed",
+                created_at: Date.parse("2026-06-17T15:20:00.000Z") / 1000,
+                usage: {
+                  input_tokens: 1,
+                  output_tokens: 2,
+                  total_tokens: 3,
+                },
+              },
+            },
+          ]),
+      });
+
+      const response = await fetch(`${baseUrl}/v1/responses`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-5.5",
+          input: [{ role: "user", content: "hello" }],
+          stream: true,
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      const text = await response.text();
+      expect(text).toContain("still streams");
+      expect(
+        errors.some((line) => line.includes("[eport-usage] failed to record codex usage")),
+      ).toBe(true);
+      expect(errors.some((line) => line.includes("disk unavailable"))).toBe(true);
+    } finally {
+      console.error = originalError;
+    }
   });
 
   it("keeps Codex suffix effort and fast tier over Cursor body defaults", async () => {

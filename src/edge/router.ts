@@ -10,17 +10,27 @@ import type { ConfigProfile, SessionFlags, TunnelMode } from "../config/types.ts
 import { ModelResolver } from "../resolver/index.ts";
 import { ModelRoutingError } from "../resolver/types.ts";
 import {
+  providerAccountFingerprintFor,
+  recordCodexCalculatedUsage,
+  type CodexUsageRecorder,
+} from "../usage/codex.ts";
+import {
   authorizeProxyRequest,
   unauthorizedResponse,
   withCors,
 } from "./api-key.ts";
 import { EdgeRequestError } from "./errors.ts";
 import { logRequestSummary } from "./log.ts";
-import { passthroughSseResponse, translateResponsesSseToChat } from "./stream.ts";
+import {
+  passthroughSseResponse,
+  translateResponsesSseToChat,
+  type CodexCompletedUsageCapture,
+} from "./stream.ts";
 
 export type EdgeShape = "chat" | "responses";
 
 export interface EdgeRouterDeps {
+  home: string;
   auth: AuthManager;
   resolver: ModelResolver;
   codexUpstream: CodexUpstreamClient;
@@ -30,6 +40,7 @@ export interface EdgeRouterDeps {
   tunnelMode: TunnelMode;
   proxyApiKey: string;
   verbose?: boolean;
+  codexUsageRecorder?: CodexUsageRecorder;
 }
 
 export function createEdgeHandler(deps: EdgeRouterDeps) {
@@ -242,6 +253,7 @@ async function handleCodexRoute(
   if (deps.verbose) {
     console.log(`[codex-upstream-body] ${JSON.stringify(prepared)}`);
   }
+  const onUsage = createCodexUsageCaptureHandler(deps, credentials, route, model);
 
   try {
     const upstream = await deps.codexUpstream.stream({
@@ -254,6 +266,7 @@ async function handleCodexRoute(
     if (edgeShape === "responses") {
       return withCors(
         passthroughSseResponse(upstream, abort.signal, {
+          onUsage,
           onFinish: (finish) =>
             logInferenceSuccess(req, url.pathname, edgeShape, route, model, started, finish),
         }),
@@ -264,6 +277,7 @@ async function handleCodexRoute(
       await translateResponsesSseToChat(upstream, {
         model,
         signal: abort.signal,
+        onUsage,
         onFinish: (finish) =>
           logInferenceSuccess(req, url.pathname, edgeShape, route, model, started, finish),
         onUnhandledEvent: (eventType) =>
@@ -302,6 +316,51 @@ async function handleCodexRoute(
       provider: "codex",
     });
   }
+}
+
+function createCodexUsageCaptureHandler(
+  deps: EdgeRouterDeps,
+  credentials: Awaited<ReturnType<AuthManager["getCodexCredentials"]>>,
+  route: ReturnType<ModelResolver["resolve"]>,
+  clientModel: string,
+): (capture: CodexCompletedUsageCapture) => void {
+  const activeEntry = deps.auth.accounts.getActiveEntry("codex");
+  const accountIdentity = activeEntry?.accountKey || credentials.accountId || activeEntry?.id || "unknown";
+  const providerAccountFingerprint = providerAccountFingerprintFor(
+    "codex",
+    accountIdentity,
+  );
+  const recorder = deps.codexUsageRecorder ?? recordCodexCalculatedUsage;
+
+  return (capture) => {
+    try {
+      recorder({
+        home: deps.home,
+        providerAccountFingerprint,
+        responseId: capture.responseId,
+        clientModel,
+        bareModelId: route.bareModelId,
+        effort: route.effort,
+        fastTier: route.fastTier,
+        finish: capture.finish,
+        usage: capture.usage,
+        recordedAt: readCodexResponseTimestamp(capture.response),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(
+        `[eport-usage] failed to record codex usage response=${capture.responseId ?? "-"} account=${providerAccountFingerprint}: ${message}`,
+      );
+    }
+  };
+}
+
+function readCodexResponseTimestamp(response: Record<string, unknown>): string | number | null {
+  const createdAt = response.created_at;
+  if (typeof createdAt === "string" || typeof createdAt === "number") return createdAt;
+  const created = response.created;
+  if (typeof created === "string" || typeof created === "number") return created;
+  return null;
 }
 
 async function handleClaudeRoute(

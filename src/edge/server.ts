@@ -4,6 +4,7 @@ import { CodexUpstreamClient } from "../codex/index.ts";
 import type { ConfigProfile, SessionFlags, TunnelMode } from "../config/types.ts";
 import { ModelCatalog, ModelResolver } from "../resolver/index.ts";
 import { clearProxyRuntimeState } from "../runtime/state.ts";
+import type { CodexUsageRecorder } from "../usage/codex.ts";
 import { createEdgeHandler } from "./router.ts";
 
 export interface EdgeServerOptions {
@@ -20,6 +21,7 @@ export interface EdgeServerOptions {
   auth?: AuthManager;
   catalog?: ModelCatalog;
   resolver?: ModelResolver;
+  codexUsageRecorder?: CodexUsageRecorder;
 }
 
 export interface EdgeServerHandle {
@@ -48,6 +50,7 @@ export function startEdgeServer(options: EdgeServerOptions): EdgeServerHandle {
   const resolver = options.resolver ?? new ModelResolver(catalog);
 
   const handler = createEdgeHandler({
+    home: options.home,
     auth,
     resolver,
     codexUpstream,
@@ -57,6 +60,7 @@ export function startEdgeServer(options: EdgeServerOptions): EdgeServerHandle {
     tunnelMode: options.tunnelMode,
     proxyApiKey: options.proxyApiKey,
     verbose: options.verbose,
+    codexUsageRecorder: options.codexUsageRecorder,
   });
 
   const server = Bun.serve({
