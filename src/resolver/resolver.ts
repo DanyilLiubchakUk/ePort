@@ -20,17 +20,17 @@ function resolveEffort(
   bareModelId: string,
   config: ConfigProfile,
 ): string | null {
-  const bodyEffort = extractBodyEffort(body);
-  if (bodyEffort) {
-    return bodyEffort;
-  }
-
   if (suffixEffort) {
     return suffixEffort;
   }
 
   if (aliasEffort) {
     return aliasEffort;
+  }
+
+  const bodyEffort = extractBodyEffort(body);
+  if (bodyEffort) {
+    return bodyEffort;
   }
 
   const modelDefault = config.modelDefaults[bareModelId]?.effort;
@@ -53,16 +53,16 @@ function resolveFastTier(
     return false;
   }
 
+  if (suffixFast) {
+    return true;
+  }
+
   const bodyFast = extractBodyFastTier(body);
   if (bodyFast === true) {
     return true;
   }
   if (bodyFast === false) {
     return false;
-  }
-
-  if (suffixFast) {
-    return true;
   }
 
   if (config.modelDefaults[bareModelId]?.fast) {

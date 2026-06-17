@@ -97,16 +97,22 @@ describe("model resolver — effort precedence", () => {
 
   const cases = [
     {
-      name: "body beats suffix",
+      name: "suffix beats body",
       model: "gpt-5.5xhigh",
       body: { reasoning: { effort: "medium" } },
-      expected: "medium",
+      expected: "xhigh",
     },
     {
       name: "suffix beats per-model default",
       model: "gpt-5.5xhigh",
       body: {},
       expected: "xhigh",
+    },
+    {
+      name: "body used when suffix is absent",
+      model: "gpt-5.5",
+      body: { reasoning: { effort: "medium" } },
+      expected: "medium",
     },
     {
       name: "per-model default beats global default",
@@ -140,12 +146,12 @@ describe("model resolver — fast mode stack", () => {
 
   const cases = [
     {
-      name: "body service_tier beats suffix",
+      name: "suffix -fast beats body service_tier",
       model: "gpt-5.5-high-fast",
       body: { service_tier: "auto" },
       session: undefined,
       config: config({ modelDefaults: { "gpt-5.5": { fast: true } } }),
-      expected: false,
+      expected: true,
     },
     {
       name: "suffix -fast beats per-model config",
@@ -154,6 +160,14 @@ describe("model resolver — fast mode stack", () => {
       session: undefined,
       config: config(),
       expected: true,
+    },
+    {
+      name: "body service_tier used when suffix is absent",
+      model: "gpt-5.5",
+      body: { service_tier: "auto" },
+      session: undefined,
+      config: config({ modelDefaults: { "gpt-5.5": { fast: true } } }),
+      expected: false,
     },
     {
       name: "per-model config fast",

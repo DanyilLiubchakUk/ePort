@@ -223,6 +223,49 @@ describe("edge router", () => {
     expect(upstreamCalls).toBe(2);
   });
 
+  it("keeps Codex suffix effort and fast tier over Cursor body defaults", async () => {
+    let lastBody: Record<string, unknown> | undefined;
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+    };
+
+    try {
+      const { baseUrl } = startTestServer({
+        codexFetchFn: async (_url, init) => {
+          lastBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          return codexSseResponse([
+            { type: "response.output_text.delta", delta: "ok" },
+            { type: "response.completed", response: { status: "completed" } },
+          ]);
+        },
+      });
+
+      const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-5.5xhigh-fast",
+          input: [{ role: "user", content: "hello" }],
+          reasoning: { effort: "medium" },
+          service_tier: "auto",
+          stream: true,
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(lastBody?.reasoning).toMatchObject({ effort: "xhigh" });
+      expect(lastBody?.service_tier).toBe("priority");
+      expect(logs.some((line) => line.includes("model=gpt-5.5xhigh-fast"))).toBe(true);
+      expect(logs.some((line) => line.includes("effort=xhigh"))).toBe(true);
+      expect(logs.some((line) => line.includes("fast=1"))).toBe(true);
+    } finally {
+      console.log = originalLog;
+    }
+  });
+
   it("routes Claude models to Anthropic upstream on responses path", async () => {
     let claudeCalls = 0;
     let lastBody: Record<string, unknown> | undefined;

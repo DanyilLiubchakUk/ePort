@@ -58,7 +58,7 @@ export function sanitizeCodexRequest(
   const reasoning = {
     ...(readRecord(out.reasoning) ?? {}),
   };
-  if (options.effort && typeof reasoning.effort !== "string") {
+  if (options.effort) {
     reasoning.effort = options.effort;
   }
   if (Object.keys(reasoning).length > 0) {
