@@ -7,6 +7,7 @@ export interface ParsedArgv {
   session: SessionFlags;
   help: boolean;
   version: boolean;
+  json: boolean;
 }
 
 const TUNNEL_MODES = new Set<TunnelMode>(["named", "quick", "none"]);
@@ -24,6 +25,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
   const positional: string[] = [];
   let help = false;
   let version = false;
+  let json = false;
 
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];
@@ -34,6 +36,10 @@ export function parseArgv(argv: string[]): ParsedArgv {
     }
     if (token === "-V" || token === "--version") {
       version = true;
+      continue;
+    }
+    if (token === "--json") {
+      json = true;
       continue;
     }
     if (token === "--verbose") {
@@ -69,5 +75,6 @@ export function parseArgv(argv: string[]): ParsedArgv {
     session,
     help,
     version,
+    json,
   };
 }

@@ -112,6 +112,59 @@ NEXT STEPS
   After rotate: update API key in Cursor → Settings → Models → OpenAI.
   Re-run Verify. Old key stops working immediately.`;
 
+export const AUTH_STATUS_HELP = `NAME
+  eport auth status — Show auth state for all providers
+
+SYNOPSIS
+  eport auth status [options]
+
+DESCRIPTION
+  Shows Codex and Claude credential status: source (CLI reuse vs ePort
+  OAuth), expiry, and whether refresh is needed. Read-only.
+
+OPTIONS
+  --json             Machine-readable output
+  --verbose          Show credential file paths
+
+EXAMPLES
+  eport auth status
+  eport auth status --json
+
+NEXT STEPS
+  Missing or expired?   eport auth login  or  eport auth login codex|claude
+  All good?             eport up`;
+
+export const AUTH_LOGIN_HELP = `NAME
+  eport auth login — Log in to subscription providers
+
+SYNOPSIS
+  eport auth login [codex|claude] [options]
+
+DESCRIPTION
+  Authenticates to upstream subscription providers. Without a provider
+  argument, logs in to all providers that are missing or stale.
+
+  Hybrid auth: ePort reuses fresh credentials from the Codex CLI
+  (~/.codex/auth.json) or Claude Code when available; otherwise runs
+  ePort OAuth for that provider.
+
+ARGUMENTS
+  codex              Log in to ChatGPT/Codex only
+  claude             Log in to Claude Max only
+  (none)             Log in to all missing/stale providers
+
+OPTIONS
+  --verbose          Show OAuth redirect and token paths
+
+EXAMPLES
+  eport auth login
+  eport auth login codex
+
+NEXT STEPS
+  eport auth status
+  eport config
+  eport up`;
+
 export function helpForCommand(command?: string, subcommand?: string): string | null {
   if (!command) {
     return ROOT_HELP;
@@ -122,6 +175,11 @@ export function helpForCommand(command?: string, subcommand?: string): string | 
       return INIT_HELP;
     case "api-key":
       return API_KEY_HELP;
+    case "auth":
+      if (subcommand === "login") {
+        return AUTH_LOGIN_HELP;
+      }
+      return AUTH_STATUS_HELP;
     default:
       if (subcommand) {
         return null;

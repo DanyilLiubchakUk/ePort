@@ -4,6 +4,8 @@ import { ConfigStore } from "../config/index.ts";
 import {
   runApiKeyRotate,
   runApiKeyShow,
+  runAuthLogin,
+  runAuthStatus,
   runInit,
   runNotImplemented,
 } from "./commands.ts";
@@ -15,7 +17,7 @@ import {
 } from "./help.ts";
 import { parseArgv } from "./parser.ts";
 
-const IMPLEMENTED_COMMANDS = new Set(["init", "api-key"]);
+const IMPLEMENTED_COMMANDS = new Set(["init", "api-key", "auth"]);
 
 function printHelp(command?: string, subcommand?: string): void {
   const text = helpForCommand(command, subcommand);
@@ -32,7 +34,7 @@ function printHelp(command?: string, subcommand?: string): void {
   console.log(GLOBAL_FLAGS_HELP);
 }
 
-export function runCli(argv: string[], home = homedir()): number {
+export async function runCli(argv: string[], home = homedir()): Promise<number> {
   let parsed;
   try {
     parsed = parseArgv(argv);
@@ -78,6 +80,27 @@ export function runCli(argv: string[], home = homedir()): number {
       printHelp("api-key");
       return 1;
     }
+    case "auth": {
+      const action = parsed.subcommand;
+      if (!action || action === "status") {
+        return runAuthStatus(home, {
+          json: parsed.json,
+          verbose: parsed.session.verbose,
+        });
+      }
+      if (action === "login") {
+        const provider = parsed.rest[0];
+        if (provider && provider !== "codex" && provider !== "claude") {
+          console.error(`unknown auth provider: ${provider}`);
+          printHelp("auth", "login");
+          return 1;
+        }
+        return runAuthLogin(home, provider, parsed.session);
+      }
+      console.error(`unknown auth subcommand: ${action}`);
+      printHelp("auth");
+      return 1;
+    }
     default:
       if (!IMPLEMENTED_COMMANDS.has(parsed.command)) {
         return runNotImplemented(parsed.command);
@@ -87,6 +110,5 @@ export function runCli(argv: string[], home = homedir()): number {
 }
 
 if (import.meta.main) {
-  const code = runCli(process.argv.slice(2));
-  process.exit(code);
+  void runCli(process.argv.slice(2)).then((code) => process.exit(code));
 }
