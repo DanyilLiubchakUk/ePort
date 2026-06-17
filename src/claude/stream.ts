@@ -1,7 +1,18 @@
 interface StreamTranslationOptions {
   model: string;
   signal?: AbortSignal;
+  onFinish?: (finish: "stop" | "tool_calls" | string) => void;
+  onUnhandledEvent?: (eventType: string) => void;
 }
+
+const HANDLED_ANTHROPIC_EVENTS = new Set([
+  "message_start",
+  "content_block_delta",
+  "content_block_start",
+  "content_block_stop",
+  "message_delta",
+  "message_stop",
+]);
 
 interface ToolStreamState {
   byIndex: Map<number, { id: string; name: string; args: string }>;
@@ -33,7 +44,7 @@ function extractSseEvent(rawEvent: string): { event: string; data: string } {
 
 export async function translateAnthropicSseToResponses(
   upstream: Response,
-  _options: StreamTranslationOptions = { model: "claude" },
+  options: StreamTranslationOptions = { model: "claude" },
 ): Promise<Response> {
   const body = upstream.body;
   if (!body) {
@@ -76,7 +87,11 @@ export async function translateAnthropicSseToResponses(
               continue;
             }
 
-            const formatted = formatResponsesEvent(event, parsed, messageId, tools);
+            if (!HANDLED_ANTHROPIC_EVENTS.has(event)) {
+              options.onUnhandledEvent?.(event);
+            }
+
+            const formatted = formatResponsesEvent(event, parsed, messageId, tools, options);
             if (formatted) {
               if (formatted.updateId) messageId = formatted.updateId;
               controller.enqueue(encoder.encode(formatted.chunk));
@@ -115,6 +130,7 @@ function formatResponsesEvent(
   data: Record<string, unknown>,
   messageId: string,
   tools: ToolStreamState,
+  options: StreamTranslationOptions,
 ): { chunk: string; updateId?: string } | null {
   if (event === "message_start") {
     const message = data.message as Record<string, unknown> | undefined;
@@ -204,6 +220,7 @@ function formatResponsesEvent(
   }
 
   if (event === "message_stop") {
+    options.onFinish?.(toOpenAiFinishReason(toAnthropicStopReason(tools)));
     return {
       chunk: `data: ${JSON.stringify({
         type: "response.completed",
@@ -264,7 +281,11 @@ export async function translateAnthropicSseToChat(
               continue;
             }
 
-            const formatted = formatChatEvent(event, parsed, state);
+            if (!HANDLED_ANTHROPIC_EVENTS.has(event)) {
+              options.onUnhandledEvent?.(event);
+            }
+
+            const formatted = formatChatEvent(event, parsed, state, options);
             if (formatted) {
               controller.enqueue(encoder.encode(formatted));
             }
@@ -314,6 +335,7 @@ function formatChatEvent(
     hadToolCall: boolean;
     stopReason: string | null;
   },
+  options: StreamTranslationOptions,
 ): string | null {
   if (event === "content_block_start") {
     const index = typeof data.index === "number" ? data.index : null;
@@ -372,13 +394,11 @@ function formatChatEvent(
   }
 
   if (event === "message_stop") {
+    const finish = toOpenAiFinishReason(state.stopReason ?? toAnthropicStopReason(state));
+    options.onFinish?.(finish);
     return (
       formatAssistantRoleChunk(state) +
-      formatChatCompletionChunk(
-        state,
-        {},
-        state.stopReason ? toOpenAiFinishReason(state.stopReason) : state.hadToolCall ? "tool_calls" : "stop",
-      )
+      formatChatCompletionChunk(state, {}, finish)
     );
   }
 
@@ -389,6 +409,10 @@ function toOpenAiFinishReason(stopReason: string): string {
   if (stopReason === "end_turn") return "stop";
   if (stopReason === "tool_use") return "tool_calls";
   return stopReason;
+}
+
+function toAnthropicStopReason(state: { stopReason: string | null; hadToolCall: boolean }): string {
+  return state.stopReason ?? (state.hadToolCall ? "tool_use" : "end_turn");
 }
 
 function formatAssistantRoleChunk(state: {

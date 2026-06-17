@@ -64,6 +64,7 @@ describe("edge router", () => {
   function startTestServer(options: {
     tunnelMode?: "none" | "named";
     proxyApiKey?: string;
+    verbose?: boolean;
     codexFetchFn?: FetchFn;
     claudeFetchFn?: ClaudeFetchFn;
   } = {}) {
@@ -113,6 +114,7 @@ describe("edge router", () => {
       proxyApiKey: profile.proxyApiKey,
       codexUpstream,
       claudeUpstream,
+      verbose: options.verbose,
     });
 
     return { baseUrl: `http://${server.host}:${server.port}` };
@@ -173,10 +175,13 @@ describe("edge router", () => {
 
       expect(response.status).toBe(200);
       expect(response.headers.get("content-type")).toContain("text/event-stream");
+      await response.text();
       expect(upstreamCalls).toBe(1);
       expect(logs.some((line) => line.includes("POST /v1/responses"))).toBe(true);
+      expect(logs.some((line) => line.includes("edge=responses"))).toBe(true);
       expect(logs.some((line) => line.includes("model=gpt-5.5xhigh-fast"))).toBe(true);
       expect(logs.some((line) => line.includes("provider=codex"))).toBe(true);
+      expect(logs.some((line) => line.includes("finish=stop"))).toBe(true);
     } finally {
       console.log = originalLog;
     }
@@ -257,11 +262,14 @@ describe("edge router", () => {
       });
 
       expect(response.status).toBe(200);
+      await response.text();
       expect(claudeCalls).toBe(1);
       expect(lastBody?.model).toBe("claude-opus-4-8");
       expect(lastBody?.thinking).toEqual({ type: "enabled", budget_tokens: 32000 });
       expect(JSON.stringify(lastBody)).not.toContain("xhigh");
       expect(logs.some((line) => line.includes("provider=claude"))).toBe(true);
+      expect(logs.some((line) => line.includes("edge=responses"))).toBe(true);
+      expect(logs.some((line) => line.includes("finish=stop"))).toBe(true);
     } finally {
       console.log = originalLog;
     }
@@ -428,6 +436,113 @@ describe("edge router", () => {
     expect(text).toContain('"get_weather"');
     expect(text).toContain('"finish_reason":"tool_calls"');
     expect(text.trimEnd().endsWith("data: [DONE]")).toBe(true);
+  });
+
+  it("logs edge shape and tool_calls finish after a Codex chat stream completes", async () => {
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+    };
+
+    try {
+      const { baseUrl } = startTestServer({
+        codexFetchFn: async () =>
+          new Response(codexSseBody(functionCallStream()), {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          }),
+      });
+
+      const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-5.5",
+          input: [{ role: "user", content: "weather?" }],
+          stream: true,
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      await response.text();
+      const requestLog = logs.find((line) => line.includes("POST /v1/chat/completions"));
+      expect(requestLog).toContain("edge=chat");
+      expect(requestLog).toContain("finish=tool_calls");
+      expect(requestLog).toContain("provider=codex");
+    } finally {
+      console.log = originalLog;
+    }
+  });
+
+  it("logs unhandled upstream SSE event names only in verbose mode", async () => {
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+    };
+
+    try {
+      const { baseUrl } = startTestServer({
+        verbose: true,
+        codexFetchFn: async () =>
+          codexSseResponse([
+            { type: "response.web_search_call.in_progress", item_id: "ws_1" },
+            { type: "response.output_text.delta", delta: "done" },
+            { type: "response.completed", response: { status: "completed" } },
+          ]),
+      });
+
+      const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-5.5",
+          input: [{ role: "user", content: "search" }],
+          stream: true,
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(
+        logs.some((line) =>
+          line.includes("[codex-sse-unhandled] event=response.web_search_call.in_progress"),
+        ),
+      ).toBe(true);
+    } finally {
+      console.log = originalLog;
+    }
+  });
+
+  it("uses client prompt_cache_key as Codex session_id through the edge route", async () => {
+    let capturedHeaders: Record<string, string> | undefined;
+    const { baseUrl } = startTestServer({
+      codexFetchFn: async (_url, init) => {
+        capturedHeaders = Object.fromEntries(
+          new Headers(init?.headers as HeadersInit).entries(),
+        );
+        return codexSseResponse([
+          { type: "response.output_text.delta", delta: "ok" },
+          { type: "response.completed", response: { status: "completed" } },
+        ]);
+      },
+    });
+
+    const response = await fetch(`${baseUrl}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        input: [{ role: "user", content: "resume this session" }],
+        prompt_cache_key: "cursor-agent-session-16",
+        stream: true,
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(capturedHeaders?.session_id).toBe("cursor-agent-session-16");
   });
 
   it("converts chat tool follow-up ingress to Responses input on upstream", async () => {

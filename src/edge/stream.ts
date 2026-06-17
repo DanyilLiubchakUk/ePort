@@ -1,6 +1,7 @@
 export function passthroughSseResponse(
   upstream: Response,
   _signal?: AbortSignal,
+  options: { onFinish?: (finish: "stop" | "tool_calls") => void } = {},
 ): Response {
   const headers = new Headers(upstream.headers);
   headers.set("content-type", "text/event-stream; charset=utf-8");
@@ -8,15 +9,56 @@ export function passthroughSseResponse(
   headers.set("connection", "keep-alive");
   headers.set("x-accel-buffering", "no");
 
-  return new Response(upstream.body, {
+  const body = upstream.body ? observeResponsesPassthrough(upstream.body, options) : null;
+
+  return new Response(body, {
     status: upstream.status,
     headers,
   });
 }
 
+function observeResponsesPassthrough(
+  body: ReadableStream<Uint8Array>,
+  options: { onFinish?: (finish: "stop" | "tool_calls") => void },
+): ReadableStream<Uint8Array> {
+  let buffer = "";
+  let hadToolCall = false;
+  const decoder = new TextDecoder();
+
+  return body.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        controller.enqueue(chunk);
+        buffer += decoder.decode(chunk, { stream: true });
+
+        let sep: number;
+        while ((sep = indexOfDoubleNewline(buffer)) !== -1) {
+          const rawEvent = buffer.slice(0, sep);
+          buffer = buffer.slice(sep + (buffer[sep] === "\r" ? 4 : 2));
+          const event = parseSseEvent(rawEvent);
+          if (!event) continue;
+
+          const item = event.item as Record<string, unknown> | undefined;
+          if (
+            event.type === "response.output_item.added" &&
+            (item?.type === "function_call" || item?.type === "custom_tool_call")
+          ) {
+            hadToolCall = true;
+          }
+          if (event.type === "response.completed") {
+            options.onFinish?.(hadToolCall ? "tool_calls" : "stop");
+          }
+        }
+      },
+    }),
+  );
+}
+
 interface ChatTranslationOptions {
   model: string;
   signal?: AbortSignal;
+  onFinish?: (finish: "stop" | "tool_calls") => void;
+  onUnhandledEvent?: (eventType: string) => void;
 }
 
 interface ChatCompletionStreamState {
@@ -29,6 +71,18 @@ interface ChatCompletionStreamState {
   nextSlot: number;
   hadToolCall: boolean;
 }
+
+const HANDLED_RESPONSE_EVENT_TYPES = new Set([
+  "response.created",
+  "response.output_text.delta",
+  "response.reasoning.delta",
+  "response.reasoning_summary_text.delta",
+  "response.output_item.added",
+  "response.function_call_arguments.delta",
+  "response.custom_tool_call_input.delta",
+  "response.output_item.done",
+  "response.completed",
+]);
 
 export async function translateResponsesSseToChat(
   upstream: Response,
@@ -73,7 +127,7 @@ export async function translateResponsesSseToChat(
             const event = parseSseEvent(rawEvent);
             if (!event) continue;
 
-            const formatted = formatChatCompletionEvent(event, state);
+            const formatted = formatChatCompletionEvent(event, state, options);
             if (formatted) {
               controller.enqueue(encoder.encode(formatted));
             }
@@ -132,8 +186,12 @@ function parseSseEvent(rawEvent: string): Record<string, unknown> | null {
 function formatChatCompletionEvent(
   event: Record<string, unknown>,
   state: ChatCompletionStreamState,
+  options: ChatTranslationOptions,
 ): string | null {
   updateChatCompletionState(event, state);
+  if (typeof event.type === "string" && !HANDLED_RESPONSE_EVENT_TYPES.has(event.type)) {
+    options.onUnhandledEvent?.(event.type);
+  }
 
   switch (event.type) {
     case "response.created":
@@ -170,6 +228,7 @@ function formatChatCompletionEvent(
       return formatToolCallDone(event, state) ?? formatReasoningItem(event, state);
 
     case "response.completed":
+      options.onFinish?.(state.hadToolCall ? "tool_calls" : "stop");
       return (
         formatAssistantRoleChunk(state) +
         formatChatCompletionChunk(state, {}, state.hadToolCall ? "tool_calls" : "stop")

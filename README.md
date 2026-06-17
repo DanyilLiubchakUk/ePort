@@ -380,6 +380,10 @@ If you ran `codex logout` or revoked Claude access, re-authenticate. `eport stat
 
 Run `curl https://your-hostname/v1/models` (with your API key from `eport api-key show`) or check `eport status` for the dynamic catalog. Add the exact custom model ID in Cursor (including suffix, e.g. `gpt-5.5xhigh-fast` or `opus-4.8max`). Cursor-facing names are normalized to official upstream ids via the alias layer — see [docs/prd/eport-v1.md](./docs/prd/eport-v1.md).
 
+### Agent stops after one message
+
+If Cursor Agent says it will edit or run a command and then stops, start ePort with `--verbose` and retry the same turn. ePort logs each inference as one line with `edge=chat|responses` and `finish=stop|tool_calls`; verbose mode also prints unhandled upstream SSE event names, which usually means a missing tool-stream translation. Agent tool loops are covered by the Cursor Agent parity slices 11–13 in [docs/ISSUES/](./docs/ISSUES/).
+
 ---
 
 ## Development

@@ -124,6 +124,7 @@ async function handleInferenceRoute(
       {
         method: req.method,
         path: url.pathname,
+        edgeShape,
         model: "?",
         effort: null,
         fast: false,
@@ -152,6 +153,7 @@ async function handleInferenceRoute(
       {
         method: req.method,
         path: url.pathname,
+        edgeShape,
         model: typeof parsed.model === "string" ? parsed.model : "?",
         effort: null,
         fast: false,
@@ -249,28 +251,23 @@ async function handleCodexRoute(
       signal: abort.signal,
     });
 
-    logRequestSummary(
-      {
-        method: req.method,
-        path: url.pathname,
-        model,
-        effort: route.effort,
-        fast: route.fastTier,
-        provider: route.provider,
-        status: 200,
-        latencyMs: Date.now() - started,
-      },
-      Boolean(deps.verbose),
-    );
-
     if (edgeShape === "responses") {
-      return withCors(passthroughSseResponse(upstream, abort.signal));
+      return withCors(
+        passthroughSseResponse(upstream, abort.signal, {
+          onFinish: (finish) =>
+            logInferenceSuccess(req, url.pathname, edgeShape, route, model, started, finish),
+        }),
+      );
     }
 
     return withCors(
       await translateResponsesSseToChat(upstream, {
         model,
         signal: abort.signal,
+        onFinish: (finish) =>
+          logInferenceSuccess(req, url.pathname, edgeShape, route, model, started, finish),
+        onUnhandledEvent: (eventType) =>
+          logUnhandledSseEvent("codex", eventType, deps.verbose),
       }),
     );
   } catch (error) {
@@ -366,23 +363,16 @@ async function handleClaudeRoute(
       signal: abort.signal,
     });
 
-    logRequestSummary(
-      {
-        method: req.method,
-        path: url.pathname,
-        model,
-        effort: route.effort,
-        fast: route.fastTier,
-        provider: route.provider,
-        status: 200,
-        latencyMs: Date.now() - started,
-      },
-      Boolean(deps.verbose),
-    );
-
     if (edgeShape === "responses") {
       return withCors(
-        await translateAnthropicSseToResponses(upstream, { model, signal: abort.signal }),
+        await translateAnthropicSseToResponses(upstream, {
+          model,
+          signal: abort.signal,
+          onFinish: (finish) =>
+            logInferenceSuccess(req, url.pathname, edgeShape, route, model, started, finish),
+          onUnhandledEvent: (eventType) =>
+            logUnhandledSseEvent("claude", eventType, deps.verbose),
+        }),
       );
     }
 
@@ -390,6 +380,10 @@ async function handleClaudeRoute(
       await translateAnthropicSseToChat(upstream, {
         model,
         signal: abort.signal,
+        onFinish: (finish) =>
+          logInferenceSuccess(req, url.pathname, edgeShape, route, model, started, finish),
+        onUnhandledEvent: (eventType) =>
+          logUnhandledSseEvent("claude", eventType, deps.verbose),
       }),
     );
   } catch (error) {
@@ -489,6 +483,41 @@ function handleUpstreamError(
       { status: 502 },
     ),
   );
+}
+
+function logInferenceSuccess(
+  req: Request,
+  path: string,
+  edgeShape: EdgeShape,
+  route: ReturnType<ModelResolver["resolve"]>,
+  model: string,
+  started: number,
+  finish: string,
+): void {
+  logRequestSummary(
+    {
+      method: req.method,
+      path,
+      edgeShape,
+      model,
+      effort: route.effort,
+      fast: route.fastTier,
+      provider: route.provider,
+      finish,
+      status: 200,
+      latencyMs: Date.now() - started,
+    },
+    false,
+  );
+}
+
+function logUnhandledSseEvent(
+  provider: "codex" | "claude",
+  eventType: string,
+  verbose?: boolean,
+): void {
+  if (!verbose) return;
+  console.log(`[${provider}-sse-unhandled] event=${eventType}`);
 }
 
 function isResponsesShapedBody(
