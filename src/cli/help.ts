@@ -51,7 +51,7 @@ function commandKey(command: string, subcommand?: string, rest: string[] = []): 
 
   if (command === "tunnel" && subcommand === "setup") {
     const mode = rest[0];
-    return mode === "named" || mode === "quick"
+    return mode === "ngrok" || mode === "named" || mode === "quick"
       ? `eport tunnel setup ${mode}`
       : "eport tunnel setup";
   }

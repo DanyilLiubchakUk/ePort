@@ -151,7 +151,7 @@ async function runConfigWizard(store: ConfigStore): Promise<number> {
     }
 
     const globalFast = await promptYesNo("Enable global fast override for all Codex requests?");
-    const tunnelMode = await promptChoice("Default tunnel mode", ["named", "quick", "none"]);
+    const tunnelMode = await promptChoice("Default tunnel mode", ["ngrok", "named", "quick", "none"]);
 
     let profile = store.load();
     for (const [bareModelId, defaults] of Object.entries(modelDefaults)) {

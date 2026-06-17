@@ -46,8 +46,9 @@ describe("ConfigStore", () => {
     expect(profile.proxyApiKey).toMatch(/^eport_/);
     expect(profile.modelDefaults).toEqual({});
     expect(profile.globalFastOverride).toBe(false);
-    expect(profile.tunnelMode).toBe("named");
+    expect(profile.tunnelMode).toBe("ngrok");
     expect(profile.tunnel).toEqual({});
+    expect(profile.ngrok).toEqual({});
 
     const onDisk = JSON.parse(readFileSync(store.configPath, "utf8"));
     expect(onDisk.proxyApiKey).toBe(profile.proxyApiKey);
@@ -123,7 +124,7 @@ describe("ConfigStore", () => {
     applyModelConfig(flagsStore, "gpt-5.5", { effort: "xhigh", fast: true });
     applyModelConfig(flagsStore, "opus-4.8", { effort: "max" });
     applyGlobalFast(flagsStore, false);
-    applyTunnelMode(flagsStore, "quick");
+    applyTunnelMode(flagsStore, "ngrok");
     const flagsProfile = flagsStore.load();
 
     home = mkdtempSync(join(tmpdir(), "eport-config-"));
@@ -132,14 +133,14 @@ describe("ConfigStore", () => {
     wizardStore.setModelDefault("gpt-5.5", { effort: "xhigh", fast: true });
     wizardStore.setModelDefault("opus-4.8", { effort: "max" });
     applyGlobalFast(wizardStore, false);
-    applyTunnelMode(wizardStore, "quick");
+    applyTunnelMode(wizardStore, "ngrok");
     const wizardProfile = wizardStore.load();
 
     expect(wizardProfile.modelDefaults).toEqual(flagsProfile.modelDefaults);
     expect(wizardProfile.globalFastOverride).toBe(flagsProfile.globalFastOverride);
     expect(wizardProfile.tunnelMode).toBe(flagsProfile.tunnelMode);
     expect(formatFlagEquivalent(flagsProfile)).toBe(
-      "eport config model gpt-5.5 --effort xhigh --fast && eport config model opus-4.8 --effort max && eport config --fast off && eport config --tunnel quick",
+      "eport config model gpt-5.5 --effort xhigh --fast && eport config model opus-4.8 --effort max && eport config --fast off",
     );
   });
 
@@ -209,6 +210,6 @@ describe("config CLI integration", () => {
     const after = readFileSync(join(home, ".eport", "config"), "utf8");
     expect(after).toBe(before);
     expect(JSON.parse(after).globalFastOverride).toBe(false);
-    expect(JSON.parse(after).tunnelMode).toBe("named");
+    expect(JSON.parse(after).tunnelMode).toBe("ngrok");
   });
 });

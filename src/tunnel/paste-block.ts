@@ -31,6 +31,12 @@ export function formatCursorPasteBlock(options: {
       "Warning: quick tunnel URLs change on every restart. Update Cursor",
       "Base URL whenever you restart eport up.",
     );
+  } else if (options.tunnelMode === "ngrok") {
+    lines.push(
+      "",
+      "ngrok mode uses your saved static domain, so this Base URL should",
+      "stay the same across eport restarts.",
+    );
   }
 
   lines.push("────────────────────────────────────────");

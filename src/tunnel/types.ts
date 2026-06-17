@@ -1,4 +1,4 @@
-import type { NamedTunnelConfig, TunnelMode } from "../config/types.ts";
+import type { NamedTunnelConfig, NgrokTunnelConfig, TunnelMode } from "../config/types.ts";
 
 export interface TunnelStatus {
   mode: TunnelMode | null;
@@ -12,15 +12,19 @@ export interface TunnelStartResult {
 
 export interface TunnelManagerOptions {
   namedConfig?: NamedTunnelConfig;
+  ngrokConfig?: NgrokTunnelConfig;
   verbose?: boolean;
   findCloudflared?: () => string | null;
+  findNgrok?: () => string | null;
   spawnCloudflared?: SpawnCloudflared;
+  spawnNgrok?: SpawnNgrok;
   reconnectDelayMs?: number;
   quickUrlTimeoutMs?: number;
 }
 
-export type SpawnCloudflared = (
+export type SpawnTunnelProcess = (
   args: string[],
+  env?: Record<string, string>,
 ) => {
   stdout: NodeJS.ReadableStream;
   stderr: NodeJS.ReadableStream;
@@ -28,3 +32,6 @@ export type SpawnCloudflared = (
   kill: () => void;
   removeAllListeners: () => void;
 };
+
+export type SpawnCloudflared = SpawnTunnelProcess;
+export type SpawnNgrok = SpawnTunnelProcess;

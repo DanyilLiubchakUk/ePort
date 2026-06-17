@@ -3,10 +3,12 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 
 import { TunnelManager } from "../../src/tunnel/manager.ts";
-import type { SpawnCloudflared } from "../../src/tunnel/types.ts";
+import type { SpawnCloudflared, SpawnNgrok } from "../../src/tunnel/types.ts";
 import {
   composeNamedPublicBaseUrl,
+  composeNgrokPublicBaseUrl,
   composeQuickPublicBaseUrl,
+  parseNgrokTunnelUrl,
   parseQuickTunnelUrl,
 } from "../../src/tunnel/url.ts";
 import { formatCursorPasteBlock } from "../../src/tunnel/paste-block.ts";
@@ -56,6 +58,14 @@ describe("tunnel url helpers", () => {
     expect(parseQuickTunnelUrl(line)).toBe("https://abc-def.trycloudflare.com");
     expect(composeQuickPublicBaseUrl("https://abc-def.trycloudflare.com")).toBe(
       "https://abc-def.trycloudflare.com/v1",
+    );
+  });
+
+  it("parses ngrok static URL and composes /v1 base", () => {
+    const line = "started tunnel url=https://stable-test.ngrok-free.app";
+    expect(parseNgrokTunnelUrl(line)).toBe("https://stable-test.ngrok-free.app");
+    expect(composeNgrokPublicBaseUrl("stable-test.ngrok-free.app")).toBe(
+      "https://stable-test.ngrok-free.app/v1",
     );
   });
 });
@@ -111,6 +121,45 @@ describe("TunnelManager", () => {
     );
   });
 
+  it("ngrok mode starts static URL with saved authtoken", async () => {
+    let capturedArgs: string[] | undefined;
+    let capturedEnv: Record<string, string> | undefined;
+    const spawnNgrok: SpawnNgrok = (args, env) => {
+      capturedArgs = args;
+      capturedEnv = env;
+      return createMockProcess(["started tunnel url=https://stable-test.ngrok-free.app"]);
+    };
+
+    manager = new TunnelManager({
+      ngrokConfig: {
+        authtoken: "ngrok-token",
+        url: "https://stable-test.ngrok-free.app",
+      },
+      spawnNgrok,
+    });
+
+    const result = await manager.start("ngrok", 8787);
+    expect(result.publicBaseUrl).toBe("https://stable-test.ngrok-free.app/v1");
+    expect(capturedArgs).toEqual([
+      "http",
+      "8787",
+      "--url",
+      "https://stable-test.ngrok-free.app",
+    ]);
+    expect(capturedEnv).toEqual({ NGROK_AUTHTOKEN: "ngrok-token" });
+  });
+
+  it("ngrok mode requires authtoken and URL", async () => {
+    manager = new TunnelManager({
+      ngrokConfig: {},
+      spawnNgrok: () => createMockProcess(),
+    });
+
+    await expect(manager.start("ngrok", 8787)).rejects.toThrow(
+      "ngrok tunnel is not configured",
+    );
+  });
+
   it("quick mode waits for trycloudflare URL in output", async () => {
     const spawnCloudflared: SpawnCloudflared = () =>
       createMockProcess([
@@ -149,13 +198,14 @@ describe("paste block", () => {
     const block = formatCursorPasteBlock({
       baseUrl: "https://eport.example.com/v1",
       proxyApiKey: "eport_test_key",
-      tunnelMode: "named",
+      tunnelMode: "ngrok",
     });
 
     expect(block).toContain("Base URL:  https://eport.example.com/v1");
     expect(block).toContain("API Key:   eport_test_key");
     expect(block).toContain("gpt-5.5");
     expect(block).toContain("opus-4.8max");
+    expect(block).toContain("saved static domain");
     expect(block).not.toContain("quick tunnel URLs change");
   });
 

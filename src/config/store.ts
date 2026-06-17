@@ -11,7 +11,7 @@ import {
 } from "./types.ts";
 
 function isTunnelMode(value: unknown): value is TunnelMode {
-  return value === "named" || value === "quick" || value === "none";
+  return value === "ngrok" || value === "named" || value === "quick" || value === "none";
 }
 
 function normalizeProfile(raw: unknown): ConfigProfile {
@@ -51,6 +51,19 @@ function normalizeProfile(raw: unknown): ConfigProfile {
                 : undefined,
           }
         : base.tunnel,
+    ngrok:
+      data.ngrok && typeof data.ngrok === "object"
+        ? {
+            authtoken:
+              typeof (data.ngrok as Record<string, unknown>).authtoken === "string"
+                ? ((data.ngrok as Record<string, unknown>).authtoken as string)
+                : undefined,
+            url:
+              typeof (data.ngrok as Record<string, unknown>).url === "string"
+                ? ((data.ngrok as Record<string, unknown>).url as string)
+                : undefined,
+          }
+        : base.ngrok,
   };
 }
 
@@ -100,6 +113,7 @@ export class ConfigStore {
       ...partial,
       modelDefaults,
       tunnel: partial.tunnel ? { ...current.tunnel, ...partial.tunnel } : current.tunnel,
+      ngrok: partial.ngrok ? { ...current.ngrok, ...partial.ngrok } : current.ngrok,
     };
     writeFileSync(this.configPath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
     return next;

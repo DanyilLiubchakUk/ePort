@@ -1,10 +1,11 @@
 import { ConfigStore } from "../config/index.ts";
-import type { SessionFlags } from "../config/types.ts";
+import type { ConfigProfile, SessionFlags } from "../config/types.ts";
 import { startEdgeServer } from "../edge/index.ts";
 import { AuthManager, formatAuthStatus } from "../auth/index.ts";
 import type { Provider } from "../auth/index.ts";
 import {
   composeNamedPublicBaseUrl,
+  composeNgrokPublicBaseUrl,
   printCursorPasteBlock,
   TunnelManager,
 } from "../tunnel/index.ts";
@@ -39,10 +40,15 @@ export function runApiKeyRotate(store: ConfigStore): number {
   console.log("Proxy API key rotated. Old key is invalid immediately.");
   console.log("Update Cursor → Settings → Models → OpenAI → API key, then Verify.");
 
-  const hostname = profile.tunnel.hostname?.trim();
-  if (hostname && profile.tunnelMode !== "none") {
+  const baseUrl =
+    profile.tunnelMode === "ngrok" && profile.ngrok.url?.trim()
+      ? composeNgrokPublicBaseUrl(profile.ngrok.url)
+      : profile.tunnel.hostname?.trim() && profile.tunnelMode !== "none"
+        ? composeNamedPublicBaseUrl(profile.tunnel.hostname)
+        : null;
+  if (baseUrl) {
     printCursorPasteBlock({
-      baseUrl: composeNamedPublicBaseUrl(hostname),
+      baseUrl,
       proxyApiKey: profile.proxyApiKey,
       tunnelMode: profile.tunnelMode,
     });
@@ -100,6 +106,13 @@ export async function runUp(
   const tunnelMode = session.tunnel ?? profile.tunnelMode;
   const listenPort = port ?? 8787;
 
+  try {
+    validateTunnelConfig(tunnelMode, profile);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
+
   const server = startEdgeServer({
     home,
     port: listenPort,
@@ -112,6 +125,7 @@ export async function runUp(
 
   const tunnel = new TunnelManager({
     namedConfig: profile.tunnel,
+    ngrokConfig: profile.ngrok,
     verbose: session.verbose,
   });
 
@@ -163,5 +177,26 @@ export async function runUp(
     await tunnel.stop();
     console.error(error instanceof Error ? error.message : String(error));
     return 1;
+  }
+}
+
+function validateTunnelConfig(
+  tunnelMode: ConfigProfile["tunnelMode"],
+  profile: ConfigProfile,
+): void {
+  if (tunnelMode === "ngrok") {
+    const authtoken = profile.ngrok.authtoken?.trim();
+    const url = profile.ngrok.url?.trim();
+    if (!authtoken || !url) {
+      throw new Error("ngrok tunnel is not configured. Run: eport tunnel setup ngrok");
+    }
+  }
+
+  if (tunnelMode === "named") {
+    const token = profile.tunnel.token?.trim();
+    const hostname = profile.tunnel.hostname?.trim();
+    if (!token || !hostname) {
+      throw new Error("Named tunnel is not configured. Run: eport tunnel setup named");
+    }
   }
 }

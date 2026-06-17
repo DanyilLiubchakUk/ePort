@@ -141,6 +141,7 @@ export async function runCli(argv: string[], home = homedir()): Promise<number> 
       return runTunnel(store, parsed.subcommand, parsed.rest, {
         token: parsed.token,
         hostname: parsed.hostname,
+        url: parsed.url,
       });
     case "accounts": {
       const action = parsed.subcommand;

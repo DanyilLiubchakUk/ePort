@@ -1,4 +1,5 @@
 export { findCloudflaredBinary } from "./cloudflared.ts";
+export { findNgrokBinary } from "./ngrok.ts";
 export { TunnelManager } from "./manager.ts";
 export {
   formatCursorPasteBlock,
@@ -13,7 +14,10 @@ export type {
 } from "./types.ts";
 export {
   composeNamedPublicBaseUrl,
+  composeNgrokPublicBaseUrl,
   composeQuickPublicBaseUrl,
+  normalizeNgrokUrl,
   normalizeHostname,
+  parseNgrokTunnelUrl,
   parseQuickTunnelUrl,
 } from "./url.ts";

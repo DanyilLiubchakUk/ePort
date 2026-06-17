@@ -8,6 +8,7 @@ export interface ParsedArgv {
   port?: number;
   token?: string;
   hostname?: string;
+  url?: string;
   label?: string;
   effort?: string;
   configFast?: "on" | "off";
@@ -16,7 +17,7 @@ export interface ParsedArgv {
   json: boolean;
 }
 
-const TUNNEL_MODES = new Set<TunnelMode>(["named", "quick", "none"]);
+const TUNNEL_MODES = new Set<TunnelMode>(["ngrok", "named", "quick", "none"]);
 
 function isFlag(token: string): boolean {
   return token.startsWith("-");
@@ -35,6 +36,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
   let port: number | undefined;
   let tunnelToken: string | undefined;
   let hostname: string | undefined;
+  let url: string | undefined;
   let label: string | undefined;
   let effort: string | undefined;
   let configFast: "on" | "off" | undefined;
@@ -79,7 +81,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
     if (arg === "--tunnel") {
       const value = argv[++i];
       if (!value || isFlag(value)) {
-        throw new Error("--tunnel requires a mode: named, quick, or none");
+        throw new Error("--tunnel requires a mode: ngrok, named, quick, or none");
       }
       const mode = parseTunnelMode(value);
       if (!mode) {
@@ -116,6 +118,14 @@ export function parseArgv(argv: string[]): ParsedArgv {
       hostname = value;
       continue;
     }
+    if (arg === "--url") {
+      const value = argv[++i];
+      if (!value || isFlag(value)) {
+        throw new Error("--url requires a value");
+      }
+      url = value;
+      continue;
+    }
     if (arg === "--label") {
       const value = argv[++i];
       if (!value || isFlag(value)) {
@@ -138,6 +148,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
     port,
     token: tunnelToken,
     hostname,
+    url,
     label,
     effort,
     configFast,

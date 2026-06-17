@@ -33,6 +33,7 @@ const helpTargets: HelpTarget[] = [
   { spec: "eport accounts status", args: ["accounts", "status", "--help"] },
   { spec: "eport config model", args: ["config", "model", "--help"] },
   { spec: "eport config", args: ["config", "--help"] },
+  { spec: "eport tunnel setup ngrok", args: ["tunnel", "setup", "ngrok", "--help"] },
   { spec: "eport tunnel setup named", args: ["tunnel", "setup", "named", "--help"] },
   { spec: "eport tunnel setup quick", args: ["tunnel", "setup", "quick", "--help"] },
   { spec: "eport tunnel setup", args: ["tunnel", "setup", "--help"] },
@@ -137,16 +138,41 @@ describe("CLI integration", () => {
     const after = readFileSync(join(home, ".eport", "config"), "utf8");
     const parsed = JSON.parse(after);
     expect(parsed.globalFastOverride).toBe(false);
-    expect(parsed.tunnelMode).toBe("named");
+    expect(parsed.tunnelMode).toBe("ngrok");
     expect(after).toBe(before);
   });
 
-  it("rejects named up without tunnel config", () => {
+  it("rejects default ngrok up without tunnel config", () => {
     home = mkdtempSync(join(tmpdir(), "eport-cli-"));
     runEport(["init"], home);
     const result = runEport(["up"], home);
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("Named tunnel is not configured");
+    expect(result.stderr).toContain("ngrok tunnel is not configured");
+  });
+
+  it("tunnel setup ngrok saves authtoken and static URL", () => {
+    home = mkdtempSync(join(tmpdir(), "eport-cli-"));
+    runEport(["init"], home);
+
+    const setup = runEport(
+      [
+        "tunnel",
+        "setup",
+        "ngrok",
+        "--token",
+        "ngrok-test-token",
+        "--url",
+        "stable-test.ngrok-free.app",
+      ],
+      home,
+    );
+    expect(setup.status).toBe(0);
+    expect(setup.stdout).toContain("https://stable-test.ngrok-free.app/v1");
+
+    const config = JSON.parse(readFileSync(join(home, ".eport", "config"), "utf8"));
+    expect(config.tunnelMode).toBe("ngrok");
+    expect(config.ngrok.authtoken).toBe("ngrok-test-token");
+    expect(config.ngrok.url).toBe("https://stable-test.ngrok-free.app");
   });
 
   it("tunnel setup named saves token and hostname", () => {
@@ -327,6 +353,7 @@ describe("CLI integration", () => {
     expect(text.status).toBe(0);
     expect(text.stdout).toContain("Config");
     expect(text.stdout).toContain("tunnel mode:     named");
+    expect(text.stdout).toContain("ngrok tunnel:    missing");
     expect(text.stdout).toContain("named tunnel:    configured");
     expect(text.stdout).toContain("fast override:   on");
     expect(text.stdout).toContain("model defaults:  gpt-5.5");
@@ -341,6 +368,7 @@ describe("CLI integration", () => {
     const parsed = JSON.parse(json.stdout);
     expect(parsed.config).toMatchObject({
       tunnelMode: "named",
+      ngrokTunnelConfigured: false,
       namedTunnelConfigured: true,
       globalFastOverride: true,
     });

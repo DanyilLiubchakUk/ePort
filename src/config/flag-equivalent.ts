@@ -18,7 +18,7 @@ export function formatFlagEquivalent(profile: ConfigProfile): string {
 
   parts.push(`eport config --fast ${profile.globalFastOverride ? "on" : "off"}`);
 
-  if (profile.tunnelMode !== "named") {
+  if (profile.tunnelMode !== "ngrok") {
     parts.push(`eport config --tunnel ${profile.tunnelMode}`);
   }
 

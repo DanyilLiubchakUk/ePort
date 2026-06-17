@@ -16,7 +16,7 @@ export interface ProxyRuntimeState {
 }
 
 function isTunnelMode(value: unknown): value is TunnelMode {
-  return value === "named" || value === "quick" || value === "none";
+  return value === "ngrok" || value === "named" || value === "quick" || value === "none";
 }
 
 function getRuntimeStatePath(home: string): string {

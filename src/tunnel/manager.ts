@@ -1,14 +1,18 @@
 import type { TunnelMode } from "../config/types.ts";
 import { createCloudflaredSpawner } from "./cloudflared.ts";
+import { createNgrokSpawner } from "./ngrok.ts";
 import type {
   SpawnCloudflared,
+  SpawnNgrok,
   TunnelManagerOptions,
   TunnelStartResult,
   TunnelStatus,
 } from "./types.ts";
 import {
   composeNamedPublicBaseUrl,
+  composeNgrokPublicBaseUrl,
   composeQuickPublicBaseUrl,
+  parseNgrokTunnelUrl,
   parseQuickTunnelUrl,
 } from "./url.ts";
 
@@ -23,6 +27,7 @@ export class TunnelManager {
   private child: ReturnType<SpawnCloudflared> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly spawnCloudflared: SpawnCloudflared;
+  private readonly spawnNgrok: SpawnNgrok;
   private readonly reconnectDelayMs: number;
   private readonly quickUrlTimeoutMs: number;
   private readonly verbose: boolean;
@@ -30,6 +35,7 @@ export class TunnelManager {
   constructor(private readonly options: TunnelManagerOptions = {}) {
     this.spawnCloudflared =
       options.spawnCloudflared ?? createCloudflaredSpawner(options.findCloudflared);
+    this.spawnNgrok = options.spawnNgrok ?? createNgrokSpawner(options.findNgrok);
     this.reconnectDelayMs = options.reconnectDelayMs ?? DEFAULT_RECONNECT_DELAY_MS;
     this.quickUrlTimeoutMs = options.quickUrlTimeoutMs ?? DEFAULT_QUICK_URL_TIMEOUT_MS;
     this.verbose = options.verbose ?? false;
@@ -44,6 +50,20 @@ export class TunnelManager {
       this.publicBaseUrl = null;
       this.connected = false;
       return { publicBaseUrl: null };
+    }
+
+    if (mode === "ngrok") {
+      const authtoken = this.options.ngrokConfig?.authtoken?.trim();
+      const url = this.options.ngrokConfig?.url?.trim();
+      if (!authtoken || !url) {
+        throw new Error(
+          "ngrok tunnel is not configured. Run: eport tunnel setup ngrok",
+        );
+      }
+
+      this.publicBaseUrl = composeNgrokPublicBaseUrl(url);
+      this.startNgrok(authtoken, url, localPort);
+      return { publicBaseUrl: this.publicBaseUrl };
     }
 
     if (mode === "named") {
@@ -99,9 +119,27 @@ export class TunnelManager {
 
   private startNamed(token: string, localPort: number): void {
     const args = ["tunnel", "run", "--token", token, "--url", `http://127.0.0.1:${localPort}`];
-    this.spawnProcess(args, () => {
-      this.connected = true;
-    });
+    this.spawnProcess("cloudflared", this.spawnCloudflared, args, undefined, (line) =>
+      line.toLowerCase().includes("registered tunnel connection"),
+    );
+  }
+
+  private startNgrok(authtoken: string, url: string, localPort: number): void {
+    const args = ["http", String(localPort), "--url", url];
+    this.spawnProcess(
+      "ngrok",
+      this.spawnNgrok,
+      args,
+      { NGROK_AUTHTOKEN: authtoken },
+      (line) => {
+        const parsed = parseNgrokTunnelUrl(line);
+        if (!parsed) {
+          return false;
+        }
+        this.publicBaseUrl = composeNgrokPublicBaseUrl(parsed);
+        return true;
+      },
+    );
   }
 
   private async startQuick(localPort: number): Promise<string> {
@@ -203,7 +241,13 @@ export class TunnelManager {
     });
   }
 
-  private spawnProcess(args: string[], onConnected: () => void): void {
+  private spawnProcess(
+    label: string,
+    spawnTunnel: SpawnCloudflared | SpawnNgrok,
+    args: string[],
+    env: Record<string, string> | undefined,
+    isConnectedLine: (line: string) => boolean,
+  ): void {
     const start = () => {
       if (this.stopped) {
         return;
@@ -211,7 +255,7 @@ export class TunnelManager {
 
       let child: ReturnType<SpawnCloudflared>;
       try {
-        child = this.spawnCloudflared(args);
+        child = spawnTunnel(args, env);
       } catch (error) {
         throw error instanceof Error ? error : new Error(String(error));
       }
@@ -223,10 +267,9 @@ export class TunnelManager {
       child.stderr.setEncoding("utf8");
       const logLine = (line: string) => {
         if (this.verbose) {
-          console.log(`[cloudflared] ${line}`);
+          console.log(`[${label}] ${line}`);
         }
-        if (line.toLowerCase().includes("registered tunnel connection")) {
-          onConnected();
+        if (isConnectedLine(line)) {
           this.connected = true;
         }
       };
@@ -240,7 +283,7 @@ export class TunnelManager {
       child.on("error", (error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
         if (this.verbose) {
-          console.error(`[cloudflared] error: ${message}`);
+          console.error(`[${label}] error: ${message}`);
         }
       });
 
@@ -250,12 +293,10 @@ export class TunnelManager {
           return;
         }
         if (this.verbose) {
-          console.log("[cloudflared] exited; reconnecting named tunnel…");
+          console.log(`[${label}] exited; reconnecting ${this.mode ?? "tunnel"} tunnel…`);
         }
         this.scheduleReconnect(() => start());
       });
-
-      onConnected();
     };
 
     start();

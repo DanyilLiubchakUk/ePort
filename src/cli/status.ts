@@ -14,6 +14,7 @@ export interface StatusSummary {
 export interface ConfigStatusSummary {
   tunnelMode: ConfigProfile["tunnelMode"];
   namedTunnelConfigured: boolean;
+  ngrokTunnelConfigured: boolean;
   globalFastOverride: boolean;
   globalDefaultEffort?: string;
   modelDefaults: Record<string, ConfigProfile["modelDefaults"][string]>;
@@ -64,6 +65,7 @@ function summarizeConfig(config: ConfigProfile): ConfigStatusSummary {
   return {
     tunnelMode: config.tunnelMode,
     namedTunnelConfigured: Boolean(config.tunnel.hostname && config.tunnel.token),
+    ngrokTunnelConfigured: Boolean(config.ngrok.url && config.ngrok.authtoken),
     globalFastOverride: config.globalFastOverride,
     globalDefaultEffort: config.globalDefaultEffort,
     modelDefaults: config.modelDefaults,
@@ -99,6 +101,7 @@ function formatConfigStatus(config: ConfigStatusSummary): string {
   const modelIds = Object.keys(config.modelDefaults).sort();
   const lines: string[] = [];
   lines.push(`  tunnel mode:     ${config.tunnelMode}`);
+  lines.push(`  ngrok tunnel:    ${config.ngrokTunnelConfigured ? "configured" : "missing"}`);
   lines.push(`  named tunnel:    ${config.namedTunnelConfigured ? "configured" : "missing"}`);
   lines.push(`  fast override:   ${config.globalFastOverride ? "on" : "off"}`);
   lines.push(`  default effort:  ${config.globalDefaultEffort ?? "—"}`);
