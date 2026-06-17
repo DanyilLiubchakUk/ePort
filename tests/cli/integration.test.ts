@@ -71,11 +71,30 @@ describe("CLI integration", () => {
     expect(after).toBe(before);
   });
 
-  it("stubs unimplemented commands", () => {
+  it("rejects named tunnel until slice 05", () => {
     home = mkdtempSync(join(tmpdir(), "eport-cli-"));
     const result = runEport(["up"], home);
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("not implemented");
+    expect(result.stderr).toContain("slice 05");
+  });
+
+  it("up --tunnel none prints listen URL", () => {
+    home = mkdtempSync(join(tmpdir(), "eport-cli-"));
+    runEport(["init"], home);
+
+    const child = spawnSync(
+      "bun",
+      ["run", cliEntry, "up", "--tunnel", "none", "--port", "18787"],
+      {
+        cwd: repoRoot,
+        env: { ...process.env, HOME: home },
+        encoding: "utf8",
+        timeout: 1500,
+      },
+    );
+
+    expect(child.stdout).toContain("ePort listening on http://127.0.0.1:18787");
+    expect(child.stdout).toContain("local base URL: http://127.0.0.1:18787/v1");
   });
 
   it("auth status after mocked login shows Codex ePort OAuth row", () => {
