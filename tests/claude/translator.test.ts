@@ -11,6 +11,10 @@ import {
 } from "../../src/claude/index.ts";
 import { makeClaudeAuthFile, msFromNow } from "../auth/helpers.ts";
 import { credentialsFromClaudeAuthFile } from "../../src/auth/claude-file.ts";
+import {
+  expectedClaudeMultimodalContent,
+  multimodalImageChatBody,
+} from "../edge/fixtures/multimodal-bodies.ts";
 
 function anthropicSse(events: Array<{ event: string; data: Record<string, unknown> }>): Response {
   const body = events
@@ -136,6 +140,36 @@ describe("claude translator — request normalization", () => {
     ]);
     expect(anthropic.tool_choice).toEqual({ type: "tool", name: "get_weather" });
     expect(anthropicRequestContainsXhigh(anthropic)).toBe(false);
+  });
+
+  it("maps URL and base64 image parts to Anthropic image blocks", () => {
+    const normalized = normalizeEdgeBody({ ...multimodalImageChatBody, model: "opus-4.8" });
+
+    const anthropic = translateToAnthropicRequest(normalized, {
+      provider: "claude",
+      canonicalModelId: "claude-opus-4-8",
+      bareModelId: "claude-opus-4-8",
+      effort: null,
+      fastTier: false,
+    });
+
+    expect(anthropic.messages).toEqual([
+      { role: "user", content: expectedClaudeMultimodalContent },
+    ]);
+  });
+
+  it("throws a clear error for unmappable image parts", () => {
+    expect(() =>
+      normalizeEdgeBody({
+        model: "opus-4.8",
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "input_image" }],
+          },
+        ],
+      }),
+    ).toThrow("unsupported image content part");
   });
 
   it("keeps Responses function_call and function_call_output mapping to tool blocks", () => {

@@ -25,6 +25,11 @@ import {
   responsesPassthroughToolStream,
 } from "./fixtures/codex-tool-sse.ts";
 import { chatToolFollowUpBody, expectedSanitizedToolInput } from "../codex/fixtures/ingress-bodies.ts";
+import {
+  expectedClaudeMultimodalContent,
+  expectedCodexMultimodalContent,
+  multimodalImageChatBody,
+} from "./fixtures/multimodal-bodies.ts";
 
 function codexSseResponse(events: Record<string, unknown>[]): Response {
   const body = events
@@ -540,6 +545,130 @@ describe("edge router", () => {
       { role: "user", content: "continue" },
     ]);
     expect(lastBody?.include).toContain("reasoning.encrypted_content");
+  });
+
+  it("routes Codex Responses-shaped input image_url to upstream input_image", async () => {
+    let lastBody: Record<string, unknown> | undefined;
+    const { baseUrl } = startTestServer({
+      codexFetchFn: async (_url, init) => {
+        lastBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return codexSseResponse([
+          { type: "response.output_text.delta", delta: "image" },
+          { type: "response.completed", response: { status: "completed" } },
+        ]);
+      },
+    });
+
+    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.5xhigh-fast",
+        input: [
+          { role: "developer", content: "be helpful" },
+          {
+            role: "user",
+            content: [
+              { type: "input_text", text: "what on this image" },
+              {
+                type: "image_url",
+                image_url: { url: "https://example.com/screenshot.png" },
+              },
+            ],
+          },
+        ],
+        stream: true,
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(lastBody?.instructions).toBe("be helpful");
+    expect(lastBody?.input).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "input_text", text: "what on this image" },
+          { type: "input_image", image_url: "https://example.com/screenshot.png" },
+        ],
+      },
+    ]);
+  });
+
+  it("routes Codex multimodal image ingress to Responses input content", async () => {
+    let lastBody: Record<string, unknown> | undefined;
+    const { baseUrl } = startTestServer({
+      codexFetchFn: async (_url, init) => {
+        lastBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return codexSseResponse([
+          { type: "response.output_text.delta", delta: "image" },
+          { type: "response.completed", response: { status: "completed" } },
+        ]);
+      },
+    });
+
+    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(multimodalImageChatBody),
+    });
+
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(lastBody?.input).toEqual([
+      { role: "user", content: expectedCodexMultimodalContent },
+    ]);
+  });
+
+  it("routes Claude multimodal image ingress to Anthropic image blocks", async () => {
+    let lastBody: Record<string, unknown> | undefined;
+    const { baseUrl } = startTestServer({
+      claudeFetchFn: async (_url, init) => {
+        lastBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return anthropicSseResponse([
+          {
+            event: "content_block_delta",
+            data: { delta: { type: "text_delta", text: "image" } },
+          },
+          { event: "message_stop", data: {} },
+        ]);
+      },
+    });
+
+    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...multimodalImageChatBody, model: "opus-4.8" }),
+    });
+
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(lastBody?.messages).toEqual([
+      { role: "user", content: expectedClaudeMultimodalContent },
+    ]);
+  });
+
+  it("returns 400 for unmappable multimodal image parts", async () => {
+    const { baseUrl } = startTestServer();
+
+    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "image_url", image_url: {} }],
+          },
+        ],
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as { error: { message: string; type: string } };
+    expect(body.error.type).toBe("invalid_request_error");
+    expect(body.error.message).toContain("unsupported image content part");
   });
 
   it("passthrough Codex tool SSE on /v1/responses without chat translation", async () => {

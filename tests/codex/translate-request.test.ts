@@ -10,6 +10,10 @@ import {
   expectedSanitizedToolInput,
   responsesToolHistoryBody,
 } from "./fixtures/ingress-bodies.ts";
+import {
+  expectedCodexMultimodalContent,
+  multimodalImageChatBody,
+} from "../edge/fixtures/multimodal-bodies.ts";
 
 const sanitizeOpts = {
   installationId: "test-install",
@@ -24,6 +28,36 @@ describe("normalizeCodexEdgeBody — Responses input passthrough", () => {
     expect(normalized.input).toEqual(responsesToolHistoryBody.input);
     expect(normalized.tools).toEqual(responsesToolHistoryBody.tools);
     expect(normalized.tool_choice).toBe("auto");
+  });
+
+  it("converts image_url parts inside Responses input content to input_image", () => {
+    const normalized = normalizeCodexEdgeBody({
+      model: "gpt-5.5",
+      input: [
+        { role: "developer", content: "be helpful" },
+        {
+          role: "user",
+          content: [
+            { type: "input_text", text: "what on this image" },
+            {
+              type: "image_url",
+              image_url: { url: "https://example.com/screenshot.png" },
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(normalized.input).toEqual([
+      { role: "developer", content: "be helpful" },
+      {
+        role: "user",
+        content: [
+          { type: "input_text", text: "what on this image" },
+          { type: "input_image", image_url: "https://example.com/screenshot.png" },
+        ],
+      },
+    ]);
   });
 
   it("forwards tool history through sanitize unchanged", () => {
@@ -80,6 +114,28 @@ describe("normalizeCodexEdgeBody — chat messages conversion", () => {
       name: "search",
       arguments: '{"q":"test"}',
     });
+  });
+
+  it("maps URL and base64 image parts to Codex input content", () => {
+    const normalized = normalizeCodexEdgeBody({ ...multimodalImageChatBody });
+
+    expect(normalized.input).toEqual([
+      { role: "user", content: expectedCodexMultimodalContent },
+    ]);
+  });
+
+  it("throws a clear error for unmappable image parts", () => {
+    expect(() =>
+      normalizeCodexEdgeBody({
+        model: "gpt-5.5",
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "image_url", image_url: {} }],
+          },
+        ],
+      }),
+    ).toThrow("unsupported image content part");
   });
 
   it("lifts system messages into input for sanitize to promote to instructions", () => {

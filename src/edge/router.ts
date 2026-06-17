@@ -14,6 +14,7 @@ import {
   unauthorizedResponse,
   withCors,
 } from "./api-key.ts";
+import { EdgeRequestError } from "./errors.ts";
 import { logRequestSummary } from "./log.ts";
 import { passthroughSseResponse, translateResponsesSseToChat } from "./stream.ts";
 
@@ -73,7 +74,8 @@ export function createEdgeHandler(deps: EdgeRouterDeps) {
         ),
       );
     } catch (error) {
-      const status = error instanceof ModelRoutingError ? 400 : 500;
+      const status =
+        error instanceof ModelRoutingError || error instanceof EdgeRequestError ? 400 : 500;
       const message = error instanceof Error ? error.message : String(error);
       logRequestSummary(
         {

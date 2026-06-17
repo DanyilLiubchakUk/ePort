@@ -1,3 +1,5 @@
+import { EdgeRequestError } from "../edge/errors.ts";
+
 export type AnthropicContentBlock =
   | { type: "text"; text: string }
   | { type: "image"; source: { type: "url"; url: string } | { type: "base64"; media_type: string; data: string } }
@@ -26,6 +28,8 @@ function readString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
+const DATA_URL_RE = /^data:([^;,]+);base64,(.+)$/;
+
 function partFromOpenAi(value: unknown): AnthropicContentBlock | null {
   const record = readRecord(value);
   if (!record) return null;
@@ -36,10 +40,42 @@ function partFromOpenAi(value: unknown): AnthropicContentBlock | null {
   }
   if (type === "input_image" || type === "image_url") {
     const imageUrl = readRecord(record.image_url);
-    const url = imageUrl ? readString(imageUrl.url) : readString(record.url);
-    if (url) return { type: "image", source: { type: "url", url } };
+    const url = readString(imageUrl?.url) ?? readString(record.image_url) ?? readString(record.url);
+    if (url) return imageBlockFromUrl(url);
+
+    const mediaType =
+      readString(record.media_type) ??
+      readString(record.mime_type) ??
+      readString(imageUrl?.media_type) ??
+      "image/png";
+    const data =
+      readString(record.data) ??
+      readString(record.base64) ??
+      readString(record.b64_json) ??
+      readString(imageUrl?.data);
+    if (data) {
+      return { type: "image", source: { type: "base64", media_type: mediaType, data } };
+    }
+
+    throw new EdgeRequestError(
+      "unsupported image content part: expected image_url.url, url, data URL, or base64 data",
+    );
   }
   return null;
+}
+
+function imageBlockFromUrl(url: string): AnthropicContentBlock {
+  const match = DATA_URL_RE.exec(url);
+  if (match) {
+    return {
+      type: "image",
+      source: { type: "base64", media_type: match[1], data: match[2] },
+    };
+  }
+  if (url.startsWith("http://") || url.startsWith("https://")) {
+    return { type: "image", source: { type: "url", url } };
+  }
+  throw new EdgeRequestError(`unsupported image URL for Claude request: ${url}`);
 }
 
 function contentFromItem(content: unknown): string | AnthropicContentBlock[] {
