@@ -60,6 +60,11 @@ NEXT STEPS
   New install? Run:  eport init  →  eport auth login  →  eport config  →  eport tunnel setup named  →  eport up
   Then paste the printed block into Cursor → Settings → Models → OpenAI.
   See README.md for Cloudflare token/hostname setup and Cursor custom models.
+
+LOCAL CHECKOUT TIP
+  Developing from this repo? Add an alias so eport uses local source:
+  alias eport='bun run /path/to/ePort/src/cli/index.ts'
+  Then future commands can be short, e.g. eport up
 ```
 
 ---

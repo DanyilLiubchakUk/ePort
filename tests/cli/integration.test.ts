@@ -8,6 +8,41 @@ import { makeClaudeAuthFile } from "../auth/helpers.ts";
 
 const repoRoot = join(import.meta.dir, "..", "..");
 const cliEntry = join(repoRoot, "src", "cli", "index.ts");
+const cliHelpSpecPath = join(repoRoot, "docs", "CLI-HELP.md");
+
+interface HelpTarget {
+  spec: string;
+  args: string[];
+  includesGlobalFlags?: boolean;
+}
+
+const helpTargets: HelpTarget[] = [
+  { spec: "eport", args: ["--help"], includesGlobalFlags: true },
+  { spec: "eport up", args: ["up", "--help"] },
+  { spec: "eport init", args: ["init", "--help"] },
+  { spec: "eport api-key", args: ["api-key", "--help"] },
+  { spec: "eport status", args: ["status", "--help"] },
+  { spec: "eport auth login", args: ["auth", "login", "--help"] },
+  { spec: "eport auth login codex", args: ["auth", "login", "codex", "--help"] },
+  { spec: "eport auth login claude", args: ["auth", "login", "claude", "--help"] },
+  { spec: "eport auth status", args: ["auth", "status", "--help"] },
+  { spec: "eport accounts list", args: ["accounts", "list", "--help"] },
+  { spec: "eport accounts add", args: ["accounts", "add", "--help"] },
+  { spec: "eport accounts switch", args: ["accounts", "switch", "--help"] },
+  { spec: "eport accounts reorder", args: ["accounts", "reorder", "--help"] },
+  { spec: "eport accounts status", args: ["accounts", "status", "--help"] },
+  { spec: "eport config model", args: ["config", "model", "--help"] },
+  { spec: "eport config", args: ["config", "--help"] },
+  { spec: "eport tunnel setup named", args: ["tunnel", "setup", "named", "--help"] },
+  { spec: "eport tunnel setup quick", args: ["tunnel", "setup", "quick", "--help"] },
+  { spec: "eport tunnel setup", args: ["tunnel", "setup", "--help"] },
+  { spec: "eport service install", args: ["service", "install", "--help"] },
+  { spec: "eport service uninstall", args: ["service", "uninstall", "--help"] },
+  { spec: "eport service start", args: ["service", "start", "--help"] },
+  { spec: "eport service stop", args: ["service", "stop", "--help"] },
+  { spec: "eport service restart", args: ["service", "restart", "--help"] },
+  { spec: "eport service status", args: ["service", "status", "--help"] },
+];
 
 function runEport(args: string[], home: string, extraEnv: Record<string, string> = {}) {
   return spawnSync("bun", ["run", cliEntry, ...args], {
@@ -15,6 +50,28 @@ function runEport(args: string[], home: string, extraEnv: Record<string, string>
     env: { ...process.env, HOME: home, ...extraEnv },
     encoding: "utf8",
   });
+}
+
+function helpBlock(name: string): string {
+  const spec = readFileSync(cliHelpSpecPath, "utf8");
+  const sectionName = name === "global-flags" ? "Global flags" : `\`${name}\``;
+  const escaped = sectionName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`^## ${escaped}\\n[\\s\\S]*?^\\\`\\\`\\\`\\n([\\s\\S]*?)^\\\`\\\`\\\``, "m");
+  const match = spec.match(pattern);
+
+  if (!match) {
+    throw new Error(`missing help block in docs/CLI-HELP.md: ${name}`);
+  }
+
+  return match[1].trimEnd();
+}
+
+function expectedHelp(target: HelpTarget): string {
+  const blocks = [helpBlock(target.spec)];
+  if (target.includesGlobalFlags) {
+    blocks.push(helpBlock("global-flags"));
+  }
+  return `${blocks.join("\n\n")}\n`;
 }
 
 describe("CLI integration", () => {
@@ -32,6 +89,17 @@ describe("CLI integration", () => {
     expect(result.status).toBe(0);
     expect(result.stdout.trim()).toBe("0.1.0");
   });
+
+  it.each(helpTargets.map((target) => [target] as [HelpTarget]))(
+    "prints docs-backed help for %p",
+    (target) => {
+      home = mkdtempSync(join(tmpdir(), "eport-cli-"));
+      const result = runEport([...target.args], home);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe(expectedHelp(target));
+      expect(result.stderr).toBe("");
+    },
+  );
 
   it("init then api-key show and rotate", () => {
     home = mkdtempSync(join(tmpdir(), "eport-cli-"));

@@ -48,8 +48,8 @@ const IMPLEMENTED_COMMANDS = new Set([
   "service",
 ]);
 
-function printHelp(command?: string, subcommand?: string): void {
-  const text = helpForCommand(command, subcommand);
+function printHelp(command?: string, subcommand?: string, rest: string[] = []): void {
+  const text = helpForCommand(command, subcommand, rest);
   if (text) {
     console.log(text);
     if (!command) {
@@ -88,7 +88,7 @@ export async function runCli(argv: string[], home = homedir()): Promise<number> 
   }
 
   if (parsed.help) {
-    printHelp(parsed.command, parsed.subcommand);
+    printHelp(parsed.command, parsed.subcommand, parsed.rest);
     return 0;
   }
 
