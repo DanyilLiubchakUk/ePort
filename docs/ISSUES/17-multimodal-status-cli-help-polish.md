@@ -21,3 +21,7 @@ Final v1 polish: multimodal translation on Codex and Claude routes (text, images
 - ISSUES/07-dynamic-models-catalog.md
 - ISSUES/08-account-queue-rotation.md
 - ISSUES/09-config-wizard-flag-equivalents.md
+- ISSUES/11-codex-agent-tool-streams.md
+- ISSUES/12-codex-agent-tool-ingress.md
+- ISSUES/13-claude-agent-tool-loop.md
+- ISSUES/15-multimodal-images-both-providers.md

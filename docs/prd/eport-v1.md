@@ -509,6 +509,7 @@ The following are explicitly **not** in ePort v1:
 - **[CONTEXT.md](../../CONTEXT.md)** — glossary terms used throughout this PRD
 - **[CLI-HELP.md](../CLI-HELP.md)** — verbatim `--help` specification for implementation
 - **[ISSUES/README.md](../../ISSUES/README.md)** — dependency-ordered vertical implementation slices
+- **[cursor-agent-parity.md](./cursor-agent-parity.md)** — Agent tool-call streaming, multimodal, and reasoning parity (Codex + Claude)
 
 ### Vendor steal list (implementation guidance)
 
@@ -528,7 +529,10 @@ Avoid vendoring codex-proxy-ts codebase (license + weight). Avoid code-proxy tea
 - **`--fast` Codex-only** — document in help and interactive config
 - **Anthropic ToS** — document token extraction risks; v1 uses direct HTTP not subprocess ToS-safe path
 - Quick tunnel was considered as default in early sketches — **grill Q4 locked named tunnel as default**
+- **Cursor Agent / tool-call / multimodal parity** — slices 04–07 deliver text-first routing; full Agent loop (tool egress/ingress, images, reasoning round-trip on chat path) is specified in **[cursor-agent-parity.md](./cursor-agent-parity.md)** and must land in slices **11–16** before slice **17** manual Agent checklist passes
 
 ### Suggested implementation slice order
 
-See **[ISSUES/README.md](../../ISSUES/README.md)** for dependency-ordered vertical slices (01–11). Each slice should ship test coverage for its deep module(s) before moving on.
+See **[ISSUES/README.md](../../ISSUES/README.md)** for dependency-ordered vertical slices (01–17). Each slice should ship test coverage for its deep module(s) before moving on.
+
+**Agent parity** (tool streams, multimodal, reasoning egress) — see **[cursor-agent-parity.md](./cursor-agent-parity.md)**; slices **11–16** after slice 07, then slice **17** HITL smoke.

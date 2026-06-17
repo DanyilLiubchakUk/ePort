@@ -10,7 +10,7 @@ HTTP server facing the Cursor client on the public HTTPS endpoint: TLS terminate
 
 ## Blocked by / ISSUES slice
 
-Codex local route in [04 — Codex edge route (local `--tunnel none`)](../../docs/ISSUES/04-codex-edge-route-local-up.md); Claude dual routing in [06](../../docs/ISSUES/06-claude-auth-translator-dual-routing.md); dynamic catalog in [07](../../docs/ISSUES/07-dynamic-models-catalog.md).
+Codex local route in [04 — Codex edge route (local `--tunnel none`)](../../docs/ISSUES/04-codex-edge-route-local-up.md); Claude dual routing in [06](../../docs/ISSUES/06-claude-auth-translator-dual-routing.md); dynamic catalog in [07](../../docs/ISSUES/07-dynamic-models-catalog.md); Agent tool streams in [11](../../docs/ISSUES/11-codex-agent-tool-streams.md) and [13](../../docs/ISSUES/13-claude-agent-tool-loop.md).
 
 ## Notes
 

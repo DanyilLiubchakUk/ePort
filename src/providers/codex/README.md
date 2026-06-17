@@ -10,7 +10,7 @@ Authenticated HTTP to the Codex subscription Responses API: direct HTTPS on the 
 
 ## Blocked by / ISSUES slice
 
-Auth wiring in [03 — Codex hybrid auth + login/status](../../docs/ISSUES/03-codex-hybrid-auth-login-status.md); first end-to-end route in [04 — Codex edge route](../../docs/ISSUES/04-codex-edge-route-local-up.md); multimodal in [11](../../docs/ISSUES/11-multimodal-status-cli-help-polish.md).
+Auth wiring in [03 — Codex hybrid auth + login/status](../../docs/ISSUES/03-codex-hybrid-auth-login-status.md); first end-to-end route in [04 — Codex edge route](../../docs/ISSUES/04-codex-edge-route-local-up.md); Agent tools in [11](../../docs/ISSUES/11-codex-agent-tool-streams.md); multimodal images in [15](../../docs/ISSUES/15-multimodal-images-both-providers.md); polish in [17](../../docs/ISSUES/17-multimodal-status-cli-help-polish.md).
 
 ## Notes
 
