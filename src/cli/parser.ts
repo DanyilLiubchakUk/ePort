@@ -5,6 +5,7 @@ export interface ParsedArgv {
   subcommand?: string;
   rest: string[];
   session: SessionFlags;
+  port?: number;
   help: boolean;
   version: boolean;
   json: boolean;
@@ -26,6 +27,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
   let help = false;
   let version = false;
   let json = false;
+  let port: number | undefined;
 
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];
@@ -62,6 +64,18 @@ export function parseArgv(argv: string[]): ParsedArgv {
       session.tunnel = mode;
       continue;
     }
+    if (token === "--port") {
+      const value = argv[++i];
+      if (!value || isFlag(value)) {
+        throw new Error("--port requires a number");
+      }
+      const parsedPort = Number.parseInt(value, 10);
+      if (!Number.isFinite(parsedPort) || parsedPort < 1 || parsedPort > 65535) {
+        throw new Error(`invalid port: ${value}`);
+      }
+      port = parsedPort;
+      continue;
+    }
 
     positional.push(token);
   }
@@ -73,6 +87,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
     subcommand,
     rest,
     session,
+    port,
     help,
     version,
     json,

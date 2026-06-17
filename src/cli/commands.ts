@@ -1,5 +1,6 @@
 import { ConfigStore } from "../config/index.ts";
 import type { SessionFlags } from "../config/types.ts";
+import { startEdgeServer } from "../edge/index.ts";
 import { AuthManager, formatAuthStatus } from "../auth/index.ts";
 import type { Provider } from "../auth/index.ts";
 
@@ -69,5 +70,52 @@ export function runAuthStatus(
   const auth = new AuthManager(home);
   const summary = auth.status();
   process.stdout.write(formatAuthStatus(summary, options));
+  return 0;
+}
+
+export async function runUp(
+  store: ConfigStore,
+  home: string,
+  session: SessionFlags,
+  port?: number,
+): Promise<number> {
+  const profile = store.ensureApiKey();
+  const tunnelMode = session.tunnel ?? profile.tunnelMode;
+
+  if (tunnelMode !== "none") {
+    console.error(
+      "Named and quick tunnel modes ship in slice 05. Use: eport up --tunnel none",
+    );
+    return 1;
+  }
+
+  const listenPort = port ?? 8787;
+  const server = startEdgeServer({
+    home,
+    port: listenPort,
+    config: profile,
+    session,
+    tunnelMode,
+    proxyApiKey: profile.proxyApiKey,
+    verbose: session.verbose,
+  });
+
+  console.log(`ePort listening on http://${server.host}:${server.port}`);
+  console.log(`  local base URL: ${server.baseUrl}`);
+  console.log("  tunnel: none (public paste block ships in slice 05)");
+  if (profile.proxyApiKey) {
+    console.log("  proxy API key: optional for --tunnel none");
+    console.log(`  curl example: curl ${server.baseUrl.replace(/\/v1$/, "")}/health`);
+  }
+
+  await new Promise<void>((resolve) => {
+    const shutdown = () => {
+      server.stop();
+      resolve();
+    };
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
+  });
+
   return 0;
 }

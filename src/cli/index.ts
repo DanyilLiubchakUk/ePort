@@ -8,6 +8,7 @@ import {
   runAuthStatus,
   runInit,
   runNotImplemented,
+  runUp,
 } from "./commands.ts";
 import {
   getPackageVersion,
@@ -17,7 +18,7 @@ import {
 } from "./help.ts";
 import { parseArgv } from "./parser.ts";
 
-const IMPLEMENTED_COMMANDS = new Set(["init", "api-key", "auth"]);
+const IMPLEMENTED_COMMANDS = new Set(["init", "api-key", "auth", "up"]);
 
 function printHelp(command?: string, subcommand?: string): void {
   const text = helpForCommand(command, subcommand);
@@ -101,6 +102,8 @@ export async function runCli(argv: string[], home = homedir()): Promise<number> 
       printHelp("auth");
       return 1;
     }
+    case "up":
+      return runUp(store, home, parsed.session, parsed.port);
     default:
       if (!IMPLEMENTED_COMMANDS.has(parsed.command)) {
         return runNotImplemented(parsed.command);
