@@ -13,6 +13,7 @@ export interface NamedTunnelConfig {
 export interface ConfigProfile {
   proxyApiKey: string;
   modelDefaults: Record<string, ModelDefaults>;
+  globalDefaultEffort?: string;
   globalFastOverride: boolean;
   tunnelMode: TunnelMode;
   tunnel: NamedTunnelConfig;

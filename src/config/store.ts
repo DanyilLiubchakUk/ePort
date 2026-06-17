@@ -28,6 +28,10 @@ function normalizeProfile(raw: unknown): ConfigProfile {
       data.modelDefaults && typeof data.modelDefaults === "object"
         ? (data.modelDefaults as ConfigProfile["modelDefaults"])
         : base.modelDefaults,
+    globalDefaultEffort:
+      typeof data.globalDefaultEffort === "string"
+        ? data.globalDefaultEffort
+        : base.globalDefaultEffort,
     globalFastOverride:
       typeof data.globalFastOverride === "boolean"
         ? data.globalFastOverride
