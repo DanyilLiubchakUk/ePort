@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "
 import { join } from "node:path";
 
 import { getEportHome } from "../config/paths.ts";
+import type { TunnelMode } from "../config/types.ts";
 import type { ActiveAccountInfo } from "../auth/account-types.ts";
 import type { Provider } from "../auth/types.ts";
 
@@ -9,7 +10,13 @@ export interface ProxyRuntimeState {
   pid: number;
   port: number;
   startedAt: number;
+  tunnelMode?: TunnelMode;
+  publicBaseUrl?: string | null;
   activeAccounts: Partial<Record<Provider, ActiveAccountInfo>>;
+}
+
+function isTunnelMode(value: unknown): value is TunnelMode {
+  return value === "named" || value === "quick" || value === "none";
 }
 
 function getRuntimeStatePath(home: string): string {
@@ -27,6 +34,9 @@ export function readProxyRuntimeState(home: string): ProxyRuntimeState | null {
     const port = typeof data.port === "number" ? data.port : 0;
     const startedAt = typeof data.startedAt === "number" ? data.startedAt : 0;
     if (!pid || !port || !startedAt) return null;
+    const tunnelMode = isTunnelMode(data.tunnelMode) ? data.tunnelMode : undefined;
+    const publicBaseUrl =
+      typeof data.publicBaseUrl === "string" ? data.publicBaseUrl : null;
 
     const activeAccounts: Partial<Record<Provider, ActiveAccountInfo>> = {};
     if (data.activeAccounts && typeof data.activeAccounts === "object") {
@@ -47,7 +57,7 @@ export function readProxyRuntimeState(home: string): ProxyRuntimeState | null {
       }
     }
 
-    return { pid, port, startedAt, activeAccounts };
+    return { pid, port, startedAt, tunnelMode, publicBaseUrl, activeAccounts };
   } catch {
     return null;
   }

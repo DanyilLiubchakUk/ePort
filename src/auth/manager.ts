@@ -146,6 +146,8 @@ export class AuthManager {
       pid: process.pid,
       port: this.runtimePort,
       startedAt: existing?.startedAt ?? Date.now(),
+      tunnelMode: existing?.tunnelMode,
+      publicBaseUrl: existing?.publicBaseUrl,
       activeAccounts: this.getActiveAccounts(),
     });
   }

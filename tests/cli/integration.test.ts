@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -218,5 +218,72 @@ describe("CLI integration", () => {
     expect(status.stdout).toContain("authenticated");
 
     rmSync(fixtureDir, { recursive: true, force: true });
+  });
+
+  it("status reports config, tunnel, runtime, and json equivalents", () => {
+    home = mkdtempSync(join(tmpdir(), "eport-cli-"));
+    runEport(["init"], home);
+    runEport(["config", "model", "gpt-5.5", "--effort", "xhigh", "--fast"], home);
+    runEport(["config", "--fast", "on"], home);
+    runEport(
+      [
+        "tunnel",
+        "setup",
+        "named",
+        "--token",
+        "eyJ-test-token",
+        "--hostname",
+        "eport.example.com",
+      ],
+      home,
+    );
+
+    const eportHome = join(home, ".eport");
+    mkdirSync(eportHome, { recursive: true });
+    writeFileSync(
+      join(eportHome, "runtime.json"),
+      `${JSON.stringify({
+        pid: process.pid,
+        port: 8787,
+        startedAt: Date.now(),
+        tunnelMode: "named",
+        publicBaseUrl: "https://eport.example.com/v1",
+        activeAccounts: {
+          codex: { provider: "codex", id: "codex-account", index: 1, label: "work" },
+        },
+      })}\n`,
+      "utf8",
+    );
+
+    const text = runEport(["status"], home);
+    expect(text.status).toBe(0);
+    expect(text.stdout).toContain("Config");
+    expect(text.stdout).toContain("tunnel mode:     named");
+    expect(text.stdout).toContain("named tunnel:    configured");
+    expect(text.stdout).toContain("fast override:   on");
+    expect(text.stdout).toContain("model defaults:  gpt-5.5");
+    expect(text.stdout).toContain("Proxy");
+    expect(text.stdout).toContain("running:    yes");
+    expect(text.stdout).toContain("tunnel:     named");
+    expect(text.stdout).toContain("base URL:   https://eport.example.com/v1");
+    expect(text.stdout).toContain("codex:      #1 work");
+
+    const json = runEport(["status", "--json"], home);
+    expect(json.status).toBe(0);
+    const parsed = JSON.parse(json.stdout);
+    expect(parsed.config).toMatchObject({
+      tunnelMode: "named",
+      namedTunnelConfigured: true,
+      globalFastOverride: true,
+    });
+    expect(parsed.config.modelDefaults["gpt-5.5"]).toEqual({
+      effort: "xhigh",
+      fast: true,
+    });
+    expect(parsed.proxy).toMatchObject({
+      port: 8787,
+      tunnelMode: "named",
+      publicBaseUrl: "https://eport.example.com/v1",
+    });
   });
 });

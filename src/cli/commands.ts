@@ -8,6 +8,7 @@ import {
   printCursorPasteBlock,
   TunnelManager,
 } from "../tunnel/index.ts";
+import { writeProxyRuntimeState } from "../runtime/state.ts";
 
 export function runInit(store: ConfigStore, session: SessionFlags): number {
   const profile = store.ensureApiKey();
@@ -116,6 +117,14 @@ export async function runUp(
 
   try {
     const tunnelResult = await tunnel.start(tunnelMode, server.port);
+    writeProxyRuntimeState(home, {
+      pid: process.pid,
+      port: server.port,
+      startedAt: Date.now(),
+      tunnelMode,
+      publicBaseUrl: tunnelResult.publicBaseUrl,
+      activeAccounts: {},
+    });
 
     console.log(`ePort listening on http://${server.host}:${server.port}`);
     console.log(`  local base URL: ${server.baseUrl}`);
