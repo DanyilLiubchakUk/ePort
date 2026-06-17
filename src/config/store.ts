@@ -6,6 +6,7 @@ import { getConfigPath, getEportHome } from "./paths.ts";
 import {
   emptyConfigProfile,
   type ConfigProfile,
+  type ModelDefaults,
   type TunnelMode,
 } from "./types.ts";
 
@@ -84,14 +85,32 @@ export class ConfigStore {
   save(partial: Partial<ConfigProfile>): ConfigProfile {
     mkdirSync(this.eportHome, { recursive: true });
     const current = this.load();
+    const modelDefaults = { ...current.modelDefaults };
+    if (partial.modelDefaults) {
+      for (const [bareModelId, defaults] of Object.entries(partial.modelDefaults)) {
+        modelDefaults[bareModelId] = {
+          ...modelDefaults[bareModelId],
+          ...defaults,
+        };
+      }
+    }
+
     const next: ConfigProfile = {
       ...current,
       ...partial,
-      modelDefaults: partial.modelDefaults ?? current.modelDefaults,
+      modelDefaults,
       tunnel: partial.tunnel ? { ...current.tunnel, ...partial.tunnel } : current.tunnel,
     };
     writeFileSync(this.configPath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
     return next;
+  }
+
+  setModelDefault(bareModelId: string, defaults: ModelDefaults): ConfigProfile {
+    return this.save({
+      modelDefaults: {
+        [bareModelId]: defaults,
+      },
+    });
   }
 
   ensureApiKey(): ConfigProfile {

@@ -165,6 +165,35 @@ NEXT STEPS
   eport config
   eport up`;
 
+export const CONFIG_HELP = `NAME
+  eport config — Set model defaults and global options
+
+SYNOPSIS
+  eport config [options]
+  eport config model <bare-model> --effort <level> [--fast]
+
+DESCRIPTION
+  Saves per-model effort defaults, global fast override, and default tunnel
+  mode to ~/.eport/config. Session flags on eport up do not mutate saved
+  settings.
+
+OPTIONS
+  --effort <level>   Per-model effort (with model subcommand)
+  --fast on|off      Global fast override (Codex priority on every request)
+  --fast             Per-model fast tier (Codex only, with model subcommand)
+  --tunnel <mode>    Default tunnel mode: named | quick | none
+
+EXAMPLES
+  eport config
+  eport config --fast on
+  eport config --tunnel named
+  eport config model gpt-5.5 --effort xhigh
+  eport config model opus-4.8 --effort max
+
+NEXT STEPS
+  Copy the printed "Flag equivalent" line to script or repeat settings.
+  eport up`;
+
 export function helpForCommand(command?: string, subcommand?: string): string | null {
   if (!command) {
     return ROOT_HELP;
@@ -180,6 +209,8 @@ export function helpForCommand(command?: string, subcommand?: string): string | 
         return AUTH_LOGIN_HELP;
       }
       return AUTH_STATUS_HELP;
+    case "config":
+      return CONFIG_HELP;
     default:
       if (subcommand) {
         return null;

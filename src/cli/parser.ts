@@ -9,6 +9,8 @@ export interface ParsedArgv {
   token?: string;
   hostname?: string;
   label?: string;
+  effort?: string;
+  configFast?: "on" | "off";
   help: boolean;
   version: boolean;
   json: boolean;
@@ -34,6 +36,8 @@ export function parseArgv(argv: string[]): ParsedArgv {
   let tunnelToken: string | undefined;
   let hostname: string | undefined;
   let label: string | undefined;
+  let effort: string | undefined;
+  let configFast: "on" | "off" | undefined;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -55,7 +59,21 @@ export function parseArgv(argv: string[]): ParsedArgv {
       continue;
     }
     if (arg === "--fast") {
+      const value = argv[i + 1];
+      if (value === "on" || value === "off") {
+        i += 1;
+        configFast = value;
+        continue;
+      }
       session.fast = true;
+      continue;
+    }
+    if (arg === "--effort") {
+      const value = argv[++i];
+      if (!value || isFlag(value)) {
+        throw new Error("--effort requires a level");
+      }
+      effort = value;
       continue;
     }
     if (arg === "--tunnel") {
@@ -121,6 +139,8 @@ export function parseArgv(argv: string[]): ParsedArgv {
     token: tunnelToken,
     hostname,
     label,
+    effort,
+    configFast,
     help,
     version,
     json,

@@ -15,6 +15,19 @@ export async function promptLine(label: string): Promise<string> {
   }
 }
 
+export async function promptYesNo(question: string): Promise<boolean> {
+  while (true) {
+    const answer = (await promptLine(`${question} [y/N]: `)).toLowerCase();
+    if (!answer || answer === "n" || answer === "no") {
+      return false;
+    }
+    if (answer === "y" || answer === "yes") {
+      return true;
+    }
+    console.log("Enter y or n");
+  }
+}
+
 export async function promptChoice(
   question: string,
   choices: readonly string[],

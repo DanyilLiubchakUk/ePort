@@ -8,6 +8,7 @@ import {
   runAccountsStatus,
   runAccountsSwitch,
 } from "./accounts-commands.ts";
+import { runConfig } from "./config-commands.ts";
 import {
   runApiKeyRotate,
   runApiKeyShow,
@@ -32,6 +33,7 @@ const IMPLEMENTED_COMMANDS = new Set([
   "api-key",
   "auth",
   "accounts",
+  "config",
   "up",
   "tunnel",
   "status",
@@ -162,6 +164,15 @@ export async function runCli(argv: string[], home = homedir()): Promise<number> 
       console.error(`unknown accounts subcommand: ${action}`);
       return 1;
     }
+    case "config":
+      return runConfig(store, {
+        subcommand: parsed.subcommand,
+        rest: parsed.rest,
+        effort: parsed.effort,
+        configFast: parsed.configFast,
+        modelFast: parsed.session.fast,
+        tunnel: parsed.session.tunnel,
+      });
     default:
       if (!IMPLEMENTED_COMMANDS.has(parsed.command)) {
         return runNotImplemented(parsed.command);
