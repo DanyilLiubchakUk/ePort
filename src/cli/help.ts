@@ -1,0 +1,131 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "package.json");
+
+export function getPackageVersion(): string {
+  const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { version: string };
+  return pkg.version;
+}
+
+export const GLOBAL_FLAGS_HELP = `GLOBAL FLAGS
+
+  --tunnel <mode>    Tunnel mode: named (default), quick, or none
+  --fast             Force Codex priority (fast) tier for this session
+  --verbose          Verbose logging (request details, tunnel output)
+
+  -h, --help         Show help for the current command
+  -V, --version      Print version`;
+
+export const ROOT_HELP = `NAME
+  eport — Route Cursor through Codex and Claude subscriptions
+
+SYNOPSIS
+  eport [command] [options]
+
+DESCRIPTION
+  ePort is a local OpenAI-compatible proxy for Cursor (and other clients).
+  It forwards requests to ChatGPT/Codex and Claude Max using subscription
+  auth — no metered API keys. Cursor requires a public HTTPS URL; ePort
+  exposes one via Cloudflare tunnel (named by default).
+
+COMMANDS
+  up                 Start the proxy and tunnel (default workflow)
+  init               Initialize ~/.eport config (API key, defaults)
+  status             Show proxy, auth, tunnel, and config summary
+  auth               Manage subscription login (Codex + Claude)
+  accounts           Manage multi-account queues (list, add, switch, reorder)
+  api-key            Show or rotate the proxy API key for Cursor
+  config             Set model defaults and global options
+  tunnel             Configure Cloudflare tunnel (named or quick)
+  service            Install and control background service (macOS/Windows)
+
+EXAMPLES
+  eport up
+  eport init
+  eport auth login
+  eport api-key show
+  eport config
+  eport tunnel setup named
+  eport service install
+
+NEXT STEPS
+  New install? Run:  eport init  →  eport auth login  →  eport config  →  eport tunnel setup named  →  eport up
+  Then paste the printed block into Cursor → Settings → Models → OpenAI.
+  See README.md for Cloudflare token/hostname setup and Cursor custom models.`;
+
+export const INIT_HELP = `NAME
+  eport init — Initialize ePort config directory
+
+SYNOPSIS
+  eport init [options]
+
+DESCRIPTION
+  Creates ~/.eport/ and writes initial config if missing. Auto-generates a
+  cryptographically random proxy API key when none exists (same behavior as
+  first eport up). Does not start the proxy or tunnel.
+
+  Use before auth/tunnel setup on a fresh machine, or to ensure config exists
+  without starting the server.
+
+OPTIONS
+  --force            Regenerate API key only if combined with api-key flow
+                     (prefer eport api-key rotate for key rotation)
+  --verbose          Show paths written
+
+EXAMPLES
+  eport init
+
+NEXT STEPS
+  eport auth login
+  eport config
+  eport tunnel setup named
+  eport up  — prints Cursor paste block (Base URL + API key + Verify hint)`;
+
+export const API_KEY_HELP = `NAME
+  eport api-key — Manage proxy API key for Cursor
+
+SYNOPSIS
+  eport api-key show
+  eport api-key rotate
+
+DESCRIPTION
+  The proxy API key is what Cursor sends as the OpenAI API key on your custom
+  Base URL. Stored in ~/.eport/config.
+
+  Auto-created on first eport up or eport init if missing.
+
+  Required when tunnel is public (named or quick). Optional for local-only
+  eport up --tunnel none.
+
+SUBCOMMANDS
+  show               Print current API key (for Cursor or curl)
+  rotate             Generate new key; invalidate old key immediately; print new
+                     Cursor paste block (Base URL + API key + Verify hint)
+
+EXAMPLES
+  eport api-key show
+  eport api-key rotate
+
+NEXT STEPS
+  After rotate: update API key in Cursor → Settings → Models → OpenAI.
+  Re-run Verify. Old key stops working immediately.`;
+
+export function helpForCommand(command?: string, subcommand?: string): string | null {
+  if (!command) {
+    return ROOT_HELP;
+  }
+
+  switch (command) {
+    case "init":
+      return INIT_HELP;
+    case "api-key":
+      return API_KEY_HELP;
+    default:
+      if (subcommand) {
+        return null;
+      }
+      return `${command}: not implemented in this release (slice 01).\nRun eport --help for available commands.`;
+  }
+}
