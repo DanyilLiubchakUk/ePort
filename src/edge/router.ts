@@ -1,4 +1,10 @@
 import { AuthManager } from "../auth/manager.ts";
+import {
+  ClaudeUpstreamClient,
+  ClaudeUpstreamError,
+  translateAnthropicSseToChat,
+  translateAnthropicSseToResponses,
+} from "../claude/index.ts";
 import { CodexUpstreamClient, CodexUpstreamError } from "../codex/index.ts";
 import type { ConfigProfile, SessionFlags, TunnelMode } from "../config/types.ts";
 import { ModelResolver } from "../resolver/index.ts";
@@ -23,7 +29,8 @@ export type EdgeShape = "chat" | "responses";
 export interface EdgeRouterDeps {
   auth: AuthManager;
   resolver: ModelResolver;
-  upstream: CodexUpstreamClient;
+  codexUpstream: CodexUpstreamClient;
+  claudeUpstream: ClaudeUpstreamClient;
   config: ConfigProfile;
   session: SessionFlags;
   tunnelMode: TunnelMode;
@@ -54,11 +61,11 @@ export function createEdgeHandler(deps: EdgeRouterDeps) {
       }
 
       if (url.pathname === "/v1/chat/completions" && req.method === "POST") {
-        return await handleCodexRoute(req, deps, "chat", started);
+        return await handleInferenceRoute(req, deps, "chat", started);
       }
 
       if (url.pathname === "/v1/responses" && req.method === "POST") {
-        return await handleCodexRoute(req, deps, "responses", started);
+        return await handleInferenceRoute(req, deps, "responses", started);
       }
 
       return withCors(
@@ -105,7 +112,7 @@ export function createEdgeHandler(deps: EdgeRouterDeps) {
   };
 }
 
-async function handleCodexRoute(
+async function handleInferenceRoute(
   req: Request,
   deps: EdgeRouterDeps,
   edgeShape: EdgeShape,
@@ -181,34 +188,23 @@ async function handleCodexRoute(
     session: deps.session,
   });
 
-  if (route.provider !== "codex") {
-    logRequestSummary(
-      {
-        method: req.method,
-        path: url.pathname,
-        model,
-        effort: route.effort,
-        fast: route.fastTier,
-        provider: route.provider,
-        status: 501,
-        latencyMs: Date.now() - started,
-        error: "Claude routes ship in slice 06",
-      },
-      Boolean(deps.verbose),
-    );
-    return withCors(
-      Response.json(
-        {
-          error: {
-            message: "Claude routes are not available yet (slice 06)",
-            type: "not_implemented",
-          },
-        },
-        { status: 501 },
-      ),
-    );
+  if (route.provider === "claude") {
+    return handleClaudeRoute(req, deps, edgeShape, started, parsed, model, route);
   }
 
+  return handleCodexRoute(req, deps, edgeShape, started, parsed, model, route);
+}
+
+async function handleCodexRoute(
+  req: Request,
+  deps: EdgeRouterDeps,
+  edgeShape: EdgeShape,
+  started: number,
+  parsed: Record<string, unknown>,
+  model: string,
+  route: ReturnType<ModelResolver["resolve"]>,
+): Promise<Response> {
+  const url = new URL(req.url);
   const abort = new AbortController();
   req.signal.addEventListener("abort", () => abort.abort(), { once: true });
 
@@ -244,13 +240,13 @@ async function handleCodexRoute(
     );
   }
 
-  const prepared = deps.upstream.prepareRequest(parsed, route);
+  const prepared = deps.codexUpstream.prepareRequest(parsed, route);
   if (deps.verbose) {
-    console.log(`[upstream-body] ${JSON.stringify(prepared)}`);
+    console.log(`[codex-upstream-body] ${JSON.stringify(prepared)}`);
   }
 
   try {
-    const upstream = await deps.upstream.stream({
+    const upstream = await deps.codexUpstream.stream({
       rawBody: parsed,
       route,
       credentials,
@@ -282,25 +278,35 @@ async function handleCodexRoute(
       }),
     );
   } catch (error) {
-    if (error instanceof CodexUpstreamError) {
-      const { status, body } = error.toOpenAiError();
-      logRequestSummary(
-        {
-          method: req.method,
-          path: url.pathname,
-          model,
-          effort: route.effort,
-          fast: route.fastTier,
-          provider: route.provider,
-          status,
-          latencyMs: Date.now() - started,
-          error: body.error.message,
-        },
-        Boolean(deps.verbose),
-      );
-      return withCors(Response.json(body, { status }));
-    }
+    return handleUpstreamError(error, {
+      method: req.method,
+      path: url.pathname,
+      model,
+      route,
+      started,
+      verbose: deps.verbose,
+      provider: "codex",
+    });
+  }
+}
 
+async function handleClaudeRoute(
+  req: Request,
+  deps: EdgeRouterDeps,
+  edgeShape: EdgeShape,
+  started: number,
+  parsed: Record<string, unknown>,
+  model: string,
+  route: ReturnType<ModelResolver["resolve"]>,
+): Promise<Response> {
+  const url = new URL(req.url);
+  const abort = new AbortController();
+  req.signal.addEventListener("abort", () => abort.abort(), { once: true });
+
+  let credentials;
+  try {
+    credentials = await deps.auth.getClaudeCredentials();
+  } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logRequestSummary(
       {
@@ -310,7 +316,7 @@ async function handleCodexRoute(
         effort: route.effort,
         fast: route.fastTier,
         provider: route.provider,
-        status: 502,
+        status: 401,
         latencyMs: Date.now() - started,
         error: message,
       },
@@ -321,14 +327,129 @@ async function handleCodexRoute(
         {
           error: {
             message,
-            type: "server_error",
-            code: null,
+            type: "authentication_error",
           },
         },
-        { status: 502 },
+        { status: 401 },
       ),
     );
   }
+
+  const prepared = deps.claudeUpstream.prepareRequest(parsed, route);
+  if (deps.verbose) {
+    console.log(`[claude-upstream-body] ${JSON.stringify(prepared)}`);
+  }
+
+  try {
+    const upstream = await deps.claudeUpstream.stream({
+      rawBody: parsed,
+      route,
+      credentials,
+      signal: abort.signal,
+    });
+
+    logRequestSummary(
+      {
+        method: req.method,
+        path: url.pathname,
+        model,
+        effort: route.effort,
+        fast: route.fastTier,
+        provider: route.provider,
+        status: 200,
+        latencyMs: Date.now() - started,
+      },
+      Boolean(deps.verbose),
+    );
+
+    if (edgeShape === "responses") {
+      return withCors(
+        await translateAnthropicSseToResponses(upstream, { model, signal: abort.signal }),
+      );
+    }
+
+    return withCors(
+      await translateAnthropicSseToChat(upstream, {
+        model,
+        signal: abort.signal,
+      }),
+    );
+  } catch (error) {
+    return handleUpstreamError(error, {
+      method: req.method,
+      path: url.pathname,
+      model,
+      route,
+      started,
+      verbose: deps.verbose,
+      provider: "claude",
+    });
+  }
+}
+
+function handleUpstreamError(
+  error: unknown,
+  context: {
+    method: string;
+    path: string;
+    model: string;
+    route: ReturnType<ModelResolver["resolve"]>;
+    started: number;
+    verbose?: boolean;
+    provider: "codex" | "claude";
+  },
+): Response {
+  const upstreamError =
+    error instanceof CodexUpstreamError || error instanceof ClaudeUpstreamError
+      ? error
+      : null;
+
+  if (upstreamError) {
+    const { status, body } = upstreamError.toOpenAiError();
+    logRequestSummary(
+      {
+        method: context.method,
+        path: context.path,
+        model: context.model,
+        effort: context.route.effort,
+        fast: context.route.fastTier,
+        provider: context.provider,
+        status,
+        latencyMs: Date.now() - context.started,
+        error: body.error.message,
+      },
+      Boolean(context.verbose),
+    );
+    return withCors(Response.json(body, { status }));
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+  logRequestSummary(
+    {
+      method: context.method,
+      path: context.path,
+      model: context.model,
+      effort: context.route.effort,
+      fast: context.route.fastTier,
+      provider: context.provider,
+      status: 502,
+      latencyMs: Date.now() - context.started,
+      error: message,
+    },
+    Boolean(context.verbose),
+  );
+  return withCors(
+    Response.json(
+      {
+        error: {
+          message,
+          type: "server_error",
+          code: null,
+        },
+      },
+      { status: 502 },
+    ),
+  );
 }
 
 function isResponsesShapedBody(

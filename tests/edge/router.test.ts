@@ -2,14 +2,32 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 
+import { ClaudeUpstreamClient, type FetchFn as ClaudeFetchFn } from "../../src/claude/index.ts";
 import { CodexUpstreamClient, type FetchFn } from "../../src/codex/index.ts";
 import { emptyConfigProfile } from "../../src/config/types.ts";
 import { startEdgeServer } from "../../src/edge/index.ts";
-import { makeCodexAuthFile, secondsFromNow, writeEportAuth } from "../auth/helpers.ts";
+import {
+  makeClaudeAuthFile,
+  makeCodexAuthFile,
+  msFromNow,
+  secondsFromNow,
+  writeEportAuth,
+  writeEportClaudeAuth,
+} from "../auth/helpers.ts";
 
-function sseResponse(events: Record<string, unknown>[]): Response {
+function codexSseResponse(events: Record<string, unknown>[]): Response {
   const body = events
     .map((event) => `data: ${JSON.stringify(event)}\n\n`)
+    .join("");
+  return new Response(body, {
+    status: 200,
+    headers: { "content-type": "text/event-stream" },
+  });
+}
+
+function anthropicSseResponse(events: Array<{ event: string; data: Record<string, unknown> }>): Response {
+  const body = events
+    .map(({ event, data }) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
     .join("");
   return new Response(body, {
     status: 200,
@@ -30,25 +48,38 @@ describe("edge router", () => {
   function startTestServer(options: {
     tunnelMode?: "none" | "named";
     proxyApiKey?: string;
-    fetchFn?: FetchFn;
+    codexFetchFn?: FetchFn;
+    claudeFetchFn?: ClaudeFetchFn;
   } = {}) {
     home = mkdtempSync(`${tmpdir()}/eport-edge-`);
     writeEportAuth(home, makeCodexAuthFile(secondsFromNow(3600)));
+    writeEportClaudeAuth(home, makeClaudeAuthFile(msFromNow(3_600_000)));
 
-    const upstream = new CodexUpstreamClient({
+    const codexUpstream = new CodexUpstreamClient({
       installationId: "edge-install",
       fetchFn:
-        options.fetchFn ??
+        options.codexFetchFn ??
         (async () =>
-          sseResponse([
+          codexSseResponse([
+            { type: "response.output_text.delta", delta: "ok" },
+            { type: "response.completed", response: { status: "completed" } },
+          ])),
+    });
+
+    const claudeUpstream = new ClaudeUpstreamClient({
+      fetchFn:
+        options.claudeFetchFn ??
+        (async () =>
+          anthropicSseResponse([
             {
-              type: "response.output_text.delta",
-              delta: "ok",
+              event: "message_start",
+              data: { message: { id: "msg_test", usage: { input_tokens: 1 } } },
             },
             {
-              type: "response.completed",
-              response: { status: "completed" },
+              event: "content_block_delta",
+              data: { delta: { type: "text_delta", text: "claude-ok" } },
             },
+            { event: "message_stop", data: {} },
           ])),
     });
 
@@ -64,7 +95,8 @@ describe("edge router", () => {
       session: {},
       tunnelMode: options.tunnelMode ?? "none",
       proxyApiKey: profile.proxyApiKey,
-      upstream,
+      codexUpstream,
+      claudeUpstream,
     });
 
     return { baseUrl: `http://${server.host}:${server.port}` };
@@ -104,9 +136,9 @@ describe("edge router", () => {
 
     try {
       const { baseUrl } = startTestServer({
-        fetchFn: async () => {
+        codexFetchFn: async () => {
           upstreamCalls += 1;
-          return sseResponse([
+          return codexSseResponse([
             { type: "response.output_text.delta", delta: "hi" },
             { type: "response.completed", response: { status: "completed" } },
           ]);
@@ -134,12 +166,12 @@ describe("edge router", () => {
     }
   });
 
-  it("dispatches chat and responses edge shapes separately", async () => {
+  it("dispatches chat and responses edge shapes separately for Codex", async () => {
     let upstreamCalls = 0;
     const { baseUrl } = startTestServer({
-      fetchFn: async () => {
+      codexFetchFn: async () => {
         upstreamCalls += 1;
-        return sseResponse([
+        return codexSseResponse([
           { type: "response.output_text.delta", delta: "x" },
           { type: "response.completed", response: { status: "completed" } },
         ]);
@@ -156,7 +188,6 @@ describe("edge router", () => {
       }),
     });
     expect(responses.status).toBe(200);
-    expect(responses.headers.get("content-type")).toContain("text/event-stream");
 
     const chat = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: "POST",
@@ -168,21 +199,87 @@ describe("edge router", () => {
       }),
     });
     expect(chat.status).toBe(200);
-    expect(chat.headers.get("content-type")).toContain("text/event-stream");
     expect(upstreamCalls).toBe(2);
   });
 
-  it("returns 501 for Claude-routed models", async () => {
-    const { baseUrl } = startTestServer();
-    const response = await fetch(`${baseUrl}/v1/responses`, {
+  it("routes Claude models to Anthropic upstream on responses path", async () => {
+    let claudeCalls = 0;
+    let lastBody: Record<string, unknown> | undefined;
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+    };
+
+    try {
+      const { baseUrl } = startTestServer({
+        claudeFetchFn: async (_url, init) => {
+          claudeCalls += 1;
+          lastBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          return anthropicSseResponse([
+            {
+              event: "message_start",
+              data: { message: { id: "msg_opus", usage: { input_tokens: 2 } } },
+            },
+            {
+              event: "content_block_delta",
+              data: { delta: { type: "text_delta", text: "opus" } },
+            },
+            { event: "message_stop", data: {} },
+          ]);
+        },
+      });
+
+      const response = await fetch(`${baseUrl}/v1/responses`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "opus-4.8max",
+          input: [{ role: "user", content: "claude route" }],
+          stream: true,
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(claudeCalls).toBe(1);
+      expect(lastBody?.model).toBe("claude-opus-4-8");
+      expect(lastBody?.thinking).toEqual({ type: "enabled", budget_tokens: 32000 });
+      expect(JSON.stringify(lastBody)).not.toContain("xhigh");
+      expect(logs.some((line) => line.includes("provider=claude"))).toBe(true);
+    } finally {
+      console.log = originalLog;
+    }
+  });
+
+  it("routes Claude models on chat path with chat-shaped stream", async () => {
+    let claudeCalls = 0;
+    const { baseUrl } = startTestServer({
+      claudeFetchFn: async () => {
+        claudeCalls += 1;
+        return anthropicSseResponse([
+          {
+            event: "content_block_delta",
+            data: { delta: { type: "text_delta", text: "hi" } },
+          },
+          { event: "message_stop", data: {} },
+        ]);
+      },
+    });
+
+    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        model: "opus-4.8max",
-        input: [{ role: "user", content: "claude later" }],
+        model: "opus-4.8",
+        messages: [{ role: "user", content: "chat claude" }],
         stream: true,
       }),
     });
-    expect(response.status).toBe(501);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    expect(claudeCalls).toBe(1);
+    const text = await response.text();
+    expect(text).toContain("chat.completion.chunk");
   });
 });

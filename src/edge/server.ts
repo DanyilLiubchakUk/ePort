@@ -1,4 +1,5 @@
 import { AuthManager } from "../auth/manager.ts";
+import { ClaudeUpstreamClient } from "../claude/index.ts";
 import { CodexUpstreamClient } from "../codex/index.ts";
 import type { ConfigProfile, SessionFlags, TunnelMode } from "../config/types.ts";
 import { ModelResolver } from "../resolver/index.ts";
@@ -13,7 +14,8 @@ export interface EdgeServerOptions {
   tunnelMode: TunnelMode;
   proxyApiKey: string;
   verbose?: boolean;
-  upstream?: CodexUpstreamClient;
+  codexUpstream?: CodexUpstreamClient;
+  claudeUpstream?: ClaudeUpstreamClient;
   auth?: AuthManager;
 }
 
@@ -27,13 +29,15 @@ export interface EdgeServerHandle {
 export function startEdgeServer(options: EdgeServerOptions): EdgeServerHandle {
   const host = options.host ?? "127.0.0.1";
   const auth = options.auth ?? new AuthManager(options.home);
-  const upstream = options.upstream ?? new CodexUpstreamClient();
+  const codexUpstream = options.codexUpstream ?? new CodexUpstreamClient();
+  const claudeUpstream = options.claudeUpstream ?? new ClaudeUpstreamClient();
   const resolver = new ModelResolver();
 
   const handler = createEdgeHandler({
     auth,
     resolver,
-    upstream,
+    codexUpstream,
+    claudeUpstream,
     config: options.config,
     session: options.session,
     tunnelMode: options.tunnelMode,
