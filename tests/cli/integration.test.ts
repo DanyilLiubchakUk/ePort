@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -7,10 +7,10 @@ import { spawnSync } from "node:child_process";
 const repoRoot = join(import.meta.dir, "..", "..");
 const cliEntry = join(repoRoot, "src", "cli", "index.ts");
 
-function runEport(args: string[], home: string) {
+function runEport(args: string[], home: string, extraEnv: Record<string, string> = {}) {
   return spawnSync("bun", ["run", cliEntry, ...args], {
     cwd: repoRoot,
-    env: { ...process.env, HOME: home },
+    env: { ...process.env, HOME: home, ...extraEnv },
     encoding: "utf8",
   });
 }
@@ -76,5 +76,46 @@ describe("CLI integration", () => {
     const result = runEport(["up"], home);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("not implemented");
+  });
+
+  it("auth status after mocked login shows Codex ePort OAuth row", () => {
+    home = mkdtempSync(join(tmpdir(), "eport-cli-"));
+    const fixtureDir = mkdtempSync(join(tmpdir(), "eport-oauth-fixture-"));
+    const fixturePath = join(fixtureDir, "codex.json");
+    const exp = Math.floor(Date.now() / 1000) + 3600;
+    const header = Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString(
+      "base64url",
+    );
+    const payload = Buffer.from(
+      JSON.stringify({
+        exp,
+        "https://api.openai.com/auth": { chatgpt_account_id: "acct-cli-test" },
+      }),
+    ).toString("base64url");
+    const accessToken = `${header}.${payload}.sig`;
+    const fixture = {
+      OPENAI_API_KEY: null,
+      auth_mode: "chatgpt",
+      tokens: {
+        id_token: accessToken,
+        access_token: accessToken,
+        refresh_token: "refresh-cli-test",
+        account_id: "acct-cli-test",
+      },
+    };
+    writeFileSync(fixturePath, `${JSON.stringify(fixture, null, 2)}\n`, "utf8");
+
+    const login = runEport(["auth", "login", "codex"], home, {
+      EPORT_TEST_OAUTH_FIXTURE: fixturePath,
+    });
+    expect(login.status).toBe(0);
+
+    const status = runEport(["auth", "status"], home);
+    expect(status.status).toBe(0);
+    expect(status.stdout).toContain("Codex:");
+    expect(status.stdout).toContain("ePort OAuth");
+    expect(status.stdout).toContain("authenticated");
+
+    rmSync(fixtureDir, { recursive: true, force: true });
   });
 });
