@@ -3,6 +3,12 @@ interface StreamTranslationOptions {
   signal?: AbortSignal;
 }
 
+interface ToolStreamState {
+  byIndex: Map<number, { id: string; name: string; args: string }>;
+  hadToolCall: boolean;
+  stopReason: string | null;
+}
+
 function indexOfDoubleNewline(buffer: string): number {
   const lf = buffer.indexOf("\n\n");
   const crlf = buffer.indexOf("\r\n\r\n");
@@ -44,6 +50,11 @@ export async function translateAnthropicSseToResponses(
       const decoder = new TextDecoder();
       let buffer = "";
       let messageId = `resp_${crypto.randomUUID()}`;
+      const tools: ToolStreamState = {
+        byIndex: new Map(),
+        hadToolCall: false,
+        stopReason: null,
+      };
 
       try {
         while (true) {
@@ -65,7 +76,7 @@ export async function translateAnthropicSseToResponses(
               continue;
             }
 
-            const formatted = formatResponsesEvent(event, parsed, messageId);
+            const formatted = formatResponsesEvent(event, parsed, messageId, tools);
             if (formatted) {
               if (formatted.updateId) messageId = formatted.updateId;
               controller.enqueue(encoder.encode(formatted.chunk));
@@ -103,6 +114,7 @@ function formatResponsesEvent(
   event: string,
   data: Record<string, unknown>,
   messageId: string,
+  tools: ToolStreamState,
 ): { chunk: string; updateId?: string } | null {
   if (event === "message_start") {
     const message = data.message as Record<string, unknown> | undefined;
@@ -125,6 +137,69 @@ function formatResponsesEvent(
           delta: delta.text,
         })}\n\n`,
       };
+    }
+    if (delta?.type === "input_json_delta" && typeof delta.partial_json === "string") {
+      const index = typeof data.index === "number" ? data.index : null;
+      const tool = index === null ? null : tools.byIndex.get(index);
+      if (!tool) return null;
+      tool.args += delta.partial_json;
+      return {
+        chunk: `data: ${JSON.stringify({
+          type: "response.function_call_arguments.delta",
+          item_id: tool.id,
+          delta: delta.partial_json,
+        })}\n\n`,
+      };
+    }
+  }
+
+  if (event === "content_block_start") {
+    const index = typeof data.index === "number" ? data.index : null;
+    const block = data.content_block as Record<string, unknown> | undefined;
+    if (index !== null && block?.type === "tool_use") {
+      const id = typeof block.id === "string" ? block.id : `toolu_${crypto.randomUUID()}`;
+      const name = typeof block.name === "string" ? block.name : "tool";
+      tools.byIndex.set(index, { id, name, args: "" });
+      tools.hadToolCall = true;
+      return {
+        chunk: `data: ${JSON.stringify({
+          type: "response.output_item.added",
+          output_index: index,
+          item: {
+            id,
+            type: "function_call",
+            call_id: id,
+            name,
+            arguments: "",
+          },
+        })}\n\n`,
+      };
+    }
+  }
+
+  if (event === "content_block_stop") {
+    const index = typeof data.index === "number" ? data.index : null;
+    const tool = index === null ? null : tools.byIndex.get(index);
+    if (!tool) return null;
+    return {
+      chunk: `data: ${JSON.stringify({
+        type: "response.output_item.done",
+        output_index: index,
+        item: {
+          id: tool.id,
+          type: "function_call",
+          call_id: tool.id,
+          name: tool.name,
+          arguments: tool.args,
+        },
+      })}\n\n`,
+    };
+  }
+
+  if (event === "message_delta") {
+    const delta = data.delta as Record<string, unknown> | undefined;
+    if (typeof delta?.stop_reason === "string") {
+      tools.stopReason = delta.stop_reason;
     }
   }
 
@@ -157,6 +232,9 @@ export async function translateAnthropicSseToChat(
     created: Math.floor(Date.now() / 1000),
     model: options.model,
     sentRole: false,
+    tools: new Map<number, { id: string; name: string; args: string }>(),
+    hadToolCall: false,
+    stopReason: null as string | null,
   };
 
   const sseStream = new ReadableStream<Uint8Array>({
@@ -232,8 +310,39 @@ function formatChatEvent(
     created: number;
     model: string;
     sentRole: boolean;
+    tools: Map<number, { id: string; name: string; args: string }>;
+    hadToolCall: boolean;
+    stopReason: string | null;
   },
 ): string | null {
+  if (event === "content_block_start") {
+    const index = typeof data.index === "number" ? data.index : null;
+    const block = data.content_block as Record<string, unknown> | undefined;
+    if (index !== null && block?.type === "tool_use") {
+      const id = typeof block.id === "string" ? block.id : `toolu_${crypto.randomUUID()}`;
+      const name = typeof block.name === "string" ? block.name : "tool";
+      state.tools.set(index, { id, name, args: "" });
+      state.hadToolCall = true;
+      return (
+        formatAssistantRoleChunk(state) +
+        formatChatCompletionChunk(
+          state,
+          {
+            tool_calls: [
+              {
+                index,
+                id,
+                type: "function",
+                function: { name, arguments: "" },
+              },
+            ],
+          },
+          null,
+        )
+      );
+    }
+  }
+
   if (event === "content_block_delta") {
     const delta = data.delta as Record<string, unknown> | undefined;
     if (delta?.type === "text_delta" && typeof delta.text === "string") {
@@ -242,16 +351,44 @@ function formatChatEvent(
         formatChatCompletionChunk(state, { content: delta.text }, null)
       );
     }
+    if (delta?.type === "input_json_delta" && typeof delta.partial_json === "string") {
+      const index = typeof data.index === "number" ? data.index : null;
+      const tool = index === null ? null : state.tools.get(index);
+      if (!tool) return null;
+      tool.args += delta.partial_json;
+      return formatChatCompletionChunk(
+        state,
+        { tool_calls: [{ index, function: { arguments: delta.partial_json } }] },
+        null,
+      );
+    }
+  }
+
+  if (event === "message_delta") {
+    const delta = data.delta as Record<string, unknown> | undefined;
+    if (typeof delta?.stop_reason === "string") {
+      state.stopReason = delta.stop_reason;
+    }
   }
 
   if (event === "message_stop") {
     return (
       formatAssistantRoleChunk(state) +
-      formatChatCompletionChunk(state, {}, "stop")
+      formatChatCompletionChunk(
+        state,
+        {},
+        state.stopReason ? toOpenAiFinishReason(state.stopReason) : state.hadToolCall ? "tool_calls" : "stop",
+      )
     );
   }
 
   return null;
+}
+
+function toOpenAiFinishReason(stopReason: string): string {
+  if (stopReason === "end_turn") return "stop";
+  if (stopReason === "tool_use") return "tool_calls";
+  return stopReason;
 }
 
 function formatAssistantRoleChunk(state: {

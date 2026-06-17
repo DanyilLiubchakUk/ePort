@@ -34,13 +34,62 @@ export function translateToAnthropicRequest(
   }
 
   if (normalized.tools?.length) {
-    body.tools = normalized.tools;
-    if (normalized.toolChoice !== undefined) {
-      body.tool_choice = normalized.toolChoice;
+    const tools = normalized.tools.map(toAnthropicTool).filter((tool) => tool !== null);
+    if (tools.length > 0) {
+      body.tools = tools;
+    }
+    if (tools.length > 0 && normalized.toolChoice !== undefined) {
+      body.tool_choice = toAnthropicToolChoice(normalized.toolChoice);
     }
   }
 
   return body;
+}
+
+function toAnthropicTool(tool: unknown): unknown | null {
+  if (!tool || typeof tool !== "object" || Array.isArray(tool)) return null;
+  const record = tool as Record<string, unknown>;
+  if (record.type === "function") {
+    const fn = record.function as Record<string, unknown> | undefined;
+    const name = typeof fn?.name === "string" ? fn.name : null;
+    if (!name) return null;
+    return {
+      name,
+      description: typeof fn?.description === "string" ? fn.description : undefined,
+      input_schema: fn?.parameters ?? { type: "object", properties: {} },
+    };
+  }
+
+  if (record.type === "custom") {
+    const custom = record.custom as Record<string, unknown> | undefined;
+    const name = typeof custom?.name === "string" ? custom.name : null;
+    if (!name) return null;
+    return {
+      name,
+      description: typeof custom?.description === "string" ? custom.description : undefined,
+      input_schema: custom?.input_schema ?? { type: "object", properties: {} },
+    };
+  }
+
+  return typeof record.name === "string" ? tool : null;
+}
+
+function toAnthropicToolChoice(toolChoice: unknown): unknown {
+  if (toolChoice === "auto" || toolChoice === "any" || toolChoice === "none") {
+    return { type: toolChoice };
+  }
+  if (!toolChoice || typeof toolChoice !== "object" || Array.isArray(toolChoice)) {
+    return toolChoice;
+  }
+
+  const record = toolChoice as Record<string, unknown>;
+  if (record.type === "function") {
+    const fn = record.function as Record<string, unknown> | undefined;
+    const name = typeof fn?.name === "string" ? fn.name : null;
+    return name ? { type: "tool", name } : toolChoice;
+  }
+
+  return toolChoice;
 }
 
 export function anthropicRequestContainsXhigh(

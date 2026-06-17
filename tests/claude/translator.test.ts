@@ -68,6 +68,99 @@ describe("claude translator — request normalization", () => {
     expect(anthropic.thinking).toEqual({ type: "enabled", budget_tokens: 16000 });
   });
 
+  it("maps chat tool_calls and tool results to Anthropic tool blocks", () => {
+    const normalized = normalizeEdgeBody({
+      model: "opus-4.8",
+      messages: [
+        { role: "user", content: "weather?" },
+        {
+          role: "assistant",
+          content: "checking",
+          tool_calls: [
+            {
+              id: "call_weather",
+              type: "function",
+              function: { name: "get_weather", arguments: '{"city":"London"}' },
+            },
+          ],
+        },
+        { role: "tool", tool_call_id: "call_weather", content: "18C" },
+      ],
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "get_weather",
+            description: "Get weather",
+            parameters: { type: "object", properties: { city: { type: "string" } } },
+          },
+        },
+      ],
+      tool_choice: { type: "function", function: { name: "get_weather" } },
+      stream: true,
+    });
+
+    const anthropic = translateToAnthropicRequest(normalized, {
+      provider: "claude",
+      canonicalModelId: "claude-opus-4-8",
+      bareModelId: "claude-opus-4-8",
+      effort: "high",
+      fastTier: false,
+    });
+
+    expect(anthropic.messages).toEqual([
+      { role: "user", content: "weather?" },
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "checking" },
+          {
+            type: "tool_use",
+            id: "call_weather",
+            name: "get_weather",
+            input: { city: "London" },
+          },
+        ],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "call_weather", content: "18C" }],
+      },
+    ]);
+    expect(anthropic.tools).toEqual([
+      {
+        name: "get_weather",
+        description: "Get weather",
+        input_schema: { type: "object", properties: { city: { type: "string" } } },
+      },
+    ]);
+    expect(anthropic.tool_choice).toEqual({ type: "tool", name: "get_weather" });
+    expect(anthropicRequestContainsXhigh(anthropic)).toBe(false);
+  });
+
+  it("keeps Responses function_call and function_call_output mapping to tool blocks", () => {
+    const normalized = normalizeEdgeBody({
+      model: "opus-4.8",
+      input: [
+        { role: "user", content: "call" },
+        { type: "function_call", call_id: "call_1", name: "lookup", arguments: '{"q":"x"}' },
+        { type: "function_call_output", call_id: "call_1", output: "result" },
+      ],
+    });
+
+    expect(normalized.messages).toEqual([
+      { role: "user", content: "call" },
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "call_1", name: "lookup", input: { q: "x" } }],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "call_1", content: "result" }],
+      },
+    ]);
+  });
+
   it("never maps xhigh effort upstream", () => {
     expect(mapEffortToAnthropicThinking("xhigh")).toBeUndefined();
     const body = translateToAnthropicRequest(
@@ -109,6 +202,43 @@ describe("claude translator — stream egress", () => {
     expect(text).toContain('"type":"response.completed"');
   });
 
+  it("translates Anthropic tool_use SSE to responses tool events", async () => {
+    const upstream = anthropicSse([
+      { event: "message_start", data: { message: { id: "msg_tool" } } },
+      {
+        event: "content_block_delta",
+        data: { index: 0, delta: { type: "text_delta", text: "checking" } },
+      },
+      {
+        event: "content_block_start",
+        data: {
+          index: 1,
+          content_block: { type: "tool_use", id: "toolu_weather", name: "get_weather" },
+        },
+      },
+      {
+        event: "content_block_delta",
+        data: { index: 1, delta: { type: "input_json_delta", partial_json: '{"city":' } },
+      },
+      {
+        event: "content_block_delta",
+        data: { index: 1, delta: { type: "input_json_delta", partial_json: '"London"}' } },
+      },
+      { event: "content_block_stop", data: { index: 1 } },
+      { event: "message_delta", data: { delta: { stop_reason: "tool_use" } } },
+      { event: "message_stop", data: {} },
+    ]);
+
+    const response = await translateAnthropicSseToResponses(upstream, { model: "opus-4.8" });
+    const text = await response.text();
+    expect(text).toContain('"type":"response.output_text.delta"');
+    expect(text).toContain('"type":"response.output_item.added"');
+    expect(text).toContain('"type":"function_call"');
+    expect(text).toContain('"type":"response.function_call_arguments.delta"');
+    expect(text).toContain('"type":"response.output_item.done"');
+    expect(text).not.toContain("output_text.delta\",\"delta\":\"{");
+  });
+
   it("translates Anthropic SSE to chat completion chunks", async () => {
     const upstream = anthropicSse([
       {
@@ -123,6 +253,42 @@ describe("claude translator — stream egress", () => {
     expect(text).toContain("chat.completion.chunk");
     expect(text).toContain('"content":"chunk"');
     expect(text).toContain("[DONE]");
+  });
+
+  it("translates Anthropic tool_use SSE to chat tool_calls", async () => {
+    const upstream = anthropicSse([
+      {
+        event: "content_block_delta",
+        data: { index: 0, delta: { type: "text_delta", text: "checking" } },
+      },
+      {
+        event: "content_block_start",
+        data: {
+          index: 1,
+          content_block: { type: "tool_use", id: "toolu_weather", name: "get_weather" },
+        },
+      },
+      {
+        event: "content_block_delta",
+        data: { index: 1, delta: { type: "input_json_delta", partial_json: '{"city":' } },
+      },
+      {
+        event: "content_block_delta",
+        data: { index: 1, delta: { type: "input_json_delta", partial_json: '"London"}' } },
+      },
+      { event: "message_delta", data: { delta: { stop_reason: "tool_use" } } },
+      { event: "message_stop", data: {} },
+    ]);
+
+    const response = await translateAnthropicSseToChat(upstream, { model: "opus-4.8" });
+    const text = await response.text();
+    expect(text).toContain('"content":"checking"');
+    expect(text).toContain('"tool_calls"');
+    expect(text).toContain('"id":"toolu_weather"');
+    expect(text).toContain('"name":"get_weather"');
+    expect(text).toContain('"{\\"city\\":"');
+    expect(text).toContain('"\\"London\\"}"');
+    expect(text).toContain('"finish_reason":"tool_calls"');
   });
 });
 

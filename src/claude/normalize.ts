@@ -51,6 +51,29 @@ function contentFromItem(content: unknown): string | AnthropicContentBlock[] {
   return blocks.length > 0 ? blocks : "";
 }
 
+function parseToolInput(argumentsJson: unknown): unknown {
+  const args = readString(argumentsJson);
+  if (!args) return {};
+  try {
+    return JSON.parse(args) as unknown;
+  } catch {
+    return {};
+  }
+}
+
+function appendBlock(
+  messages: NormalizedClaudeMessage[],
+  role: "user" | "assistant",
+  block: AnthropicContentBlock,
+): void {
+  const last = messages.at(-1);
+  if (last?.role === role && Array.isArray(last.content)) {
+    last.content.push(block);
+  } else {
+    messages.push({ role, content: [block] });
+  }
+}
+
 function normalizeInputArray(input: unknown[]): NormalizedClaudeRequest {
   const messages: NormalizedClaudeMessage[] = [];
   const systemParts: string[] = [];
@@ -79,27 +102,13 @@ function normalizeInputArray(input: unknown[]): NormalizedClaudeRequest {
     if (record.type === "function_call") {
       const callId = readString(record.call_id) ?? crypto.randomUUID();
       const name = readString(record.name) ?? "tool";
-      let parsedInput: unknown = {};
-      const args = readString(record.arguments);
-      if (args) {
-        try {
-          parsedInput = JSON.parse(args) as unknown;
-        } catch {
-          parsedInput = {};
-        }
-      }
       const toolUse: AnthropicContentBlock = {
         type: "tool_use",
         id: callId,
         name,
-        input: parsedInput,
+        input: parseToolInput(record.arguments),
       };
-      const last = messages.at(-1);
-      if (last?.role === "assistant" && Array.isArray(last.content)) {
-        last.content.push(toolUse);
-      } else {
-        messages.push({ role: "assistant", content: [toolUse] });
-      }
+      appendBlock(messages, "assistant", toolUse);
       continue;
     }
 
@@ -111,12 +120,7 @@ function normalizeInputArray(input: unknown[]): NormalizedClaudeRequest {
         tool_use_id: callId,
         content: output,
       };
-      const last = messages.at(-1);
-      if (last?.role === "user" && Array.isArray(last.content)) {
-        last.content.push(toolResult);
-      } else {
-        messages.push({ role: "user", content: [toolResult] });
-      }
+      appendBlock(messages, "user", toolResult);
     }
   }
 
@@ -143,9 +147,37 @@ function normalizeMessagesArray(messages: unknown[]): NormalizedClaudeRequest {
       continue;
     }
     if (role === "user" || role === "assistant") {
-      normalized.push({
-        role,
-        content: contentFromItem(record.content),
+      const content = contentFromItem(record.content);
+      const toolCalls = Array.isArray(record.tool_calls) ? record.tool_calls : [];
+      if (role === "assistant" && toolCalls.length > 0) {
+        const blocks: AnthropicContentBlock[] = [];
+        if (typeof content === "string" && content.length > 0) {
+          blocks.push({ type: "text", text: content });
+        } else if (Array.isArray(content)) {
+          blocks.push(...content);
+        }
+        for (const toolCall of toolCalls) {
+          const tc = readRecord(toolCall);
+          const fn = readRecord(tc?.function);
+          const id = readString(tc?.id) ?? crypto.randomUUID();
+          blocks.push({
+            type: "tool_use",
+            id,
+            name: readString(fn?.name) ?? "tool",
+            input: parseToolInput(fn?.arguments),
+          });
+        }
+        normalized.push({ role, content: blocks });
+      } else {
+        normalized.push({ role, content });
+      }
+      continue;
+    }
+    if (role === "tool") {
+      appendBlock(normalized, "user", {
+        type: "tool_result",
+        tool_use_id: readString(record.tool_call_id) ?? "",
+        content: readString(record.content) ?? "",
       });
     }
   }

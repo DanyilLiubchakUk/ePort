@@ -293,6 +293,109 @@ describe("edge router", () => {
     expect(text).toContain("chat.completion.chunk");
   });
 
+  it("routes Claude chat tool loop with Anthropic request and chat tool_calls", async () => {
+    let claudeCalls = 0;
+    let lastBody: Record<string, unknown> | undefined;
+    const { baseUrl } = startTestServer({
+      claudeFetchFn: async (_url, init) => {
+        claudeCalls += 1;
+        lastBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return anthropicSseResponse([
+          {
+            event: "content_block_delta",
+            data: { index: 0, delta: { type: "text_delta", text: "checking" } },
+          },
+          {
+            event: "content_block_start",
+            data: {
+              index: 1,
+              content_block: { type: "tool_use", id: "toolu_weather", name: "get_weather" },
+            },
+          },
+          {
+            event: "content_block_delta",
+            data: { index: 1, delta: { type: "input_json_delta", partial_json: '{"city":' } },
+          },
+          {
+            event: "content_block_delta",
+            data: { index: 1, delta: { type: "input_json_delta", partial_json: '"London"}' } },
+          },
+          { event: "message_delta", data: { delta: { stop_reason: "tool_use" } } },
+          { event: "message_stop", data: {} },
+        ]);
+      },
+    });
+
+    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "opus-4.8high",
+        messages: [
+          { role: "user", content: "weather in London?" },
+          {
+            role: "assistant",
+            content: "checking",
+            tool_calls: [
+              {
+                id: "call_weather",
+                type: "function",
+                function: { name: "get_weather", arguments: '{"city":"London"}' },
+              },
+            ],
+          },
+          { role: "tool", tool_call_id: "call_weather", content: "18C" },
+        ],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "get_weather",
+              parameters: { type: "object", properties: { city: { type: "string" } } },
+            },
+          },
+        ],
+        tool_choice: "auto",
+        stream: true,
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    expect(claudeCalls).toBe(1);
+    expect(lastBody?.model).toBe("claude-opus-4-8");
+    expect(JSON.stringify(lastBody)).not.toContain("xhigh");
+    expect(lastBody?.tools).toEqual([
+      {
+        name: "get_weather",
+        description: undefined,
+        input_schema: { type: "object", properties: { city: { type: "string" } } },
+      },
+    ]);
+    expect(lastBody?.tool_choice).toEqual({ type: "auto" });
+    expect(lastBody?.messages).toEqual([
+      { role: "user", content: "weather in London?" },
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "checking" },
+          {
+            type: "tool_use",
+            id: "call_weather",
+            name: "get_weather",
+            input: { city: "London" },
+          },
+        ],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "call_weather", content: "18C" }],
+      },
+    ]);
+    expect(text).toContain('"tool_calls"');
+    expect(text).toContain('"finish_reason":"tool_calls"');
+  });
+
   it("translates Codex tool SSE to chat tool_calls on /v1/chat/completions", async () => {
     const { baseUrl } = startTestServer({
       codexFetchFn: async () =>
