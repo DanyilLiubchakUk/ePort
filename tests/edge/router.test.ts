@@ -18,6 +18,11 @@ import {
   writeEportAuth,
   writeEportClaudeAuth,
 } from "../auth/helpers.ts";
+import {
+  codexSseBody,
+  functionCallStream,
+  responsesPassthroughToolStream,
+} from "./fixtures/codex-tool-sse.ts";
 
 function codexSseResponse(events: Record<string, unknown>[]): Response {
   const body = events
@@ -285,6 +290,62 @@ describe("edge router", () => {
     expect(claudeCalls).toBe(1);
     const text = await response.text();
     expect(text).toContain("chat.completion.chunk");
+  });
+
+  it("translates Codex tool SSE to chat tool_calls on /v1/chat/completions", async () => {
+    const { baseUrl } = startTestServer({
+      codexFetchFn: async () =>
+        new Response(codexSseBody(functionCallStream()), {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        }),
+    });
+
+    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        input: [{ role: "user", content: "weather?" }],
+        stream: true,
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    expect(text).toContain("chat.completion.chunk");
+    expect(text).toContain('"tool_calls"');
+    expect(text).toContain('"get_weather"');
+    expect(text).toContain('"finish_reason":"tool_calls"');
+    expect(text.trimEnd().endsWith("data: [DONE]")).toBe(true);
+  });
+
+  it("passthrough Codex tool SSE on /v1/responses without chat translation", async () => {
+    const { baseUrl } = startTestServer({
+      codexFetchFn: async () =>
+        new Response(codexSseBody(responsesPassthroughToolStream()), {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        }),
+    });
+
+    const response = await fetch(`${baseUrl}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        input: [{ role: "user", content: "read file" }],
+        stream: true,
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    expect(text).toContain("response.output_item.added");
+    expect(text).toContain("function_call");
+    expect(text).toContain("response.function_call_arguments.delta");
+    expect(text).not.toContain("chat.completion.chunk");
+    expect(text).not.toContain("tool_calls");
   });
 
   it("rotates Codex account on upstream 429 and retries once", async () => {
