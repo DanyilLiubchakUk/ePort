@@ -71,11 +71,70 @@ describe("CLI integration", () => {
     expect(after).toBe(before);
   });
 
-  it("rejects named tunnel until slice 05", () => {
+  it("rejects named up without tunnel config", () => {
     home = mkdtempSync(join(tmpdir(), "eport-cli-"));
+    runEport(["init"], home);
     const result = runEport(["up"], home);
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("slice 05");
+    expect(result.stderr).toContain("Named tunnel is not configured");
+  });
+
+  it("tunnel setup named saves token and hostname", () => {
+    home = mkdtempSync(join(tmpdir(), "eport-cli-"));
+    runEport(["init"], home);
+
+    const setup = runEport(
+      [
+        "tunnel",
+        "setup",
+        "named",
+        "--token",
+        "eyJ-test-token",
+        "--hostname",
+        "eport.example.com",
+      ],
+      home,
+    );
+    expect(setup.status).toBe(0);
+    expect(setup.stdout).toContain("https://eport.example.com/v1");
+
+    const config = JSON.parse(readFileSync(join(home, ".eport", "config"), "utf8"));
+    expect(config.tunnelMode).toBe("named");
+    expect(config.tunnel.token).toBe("eyJ-test-token");
+    expect(config.tunnel.hostname).toBe("eport.example.com");
+  });
+
+  it("tunnel setup quick persists quick mode", () => {
+    home = mkdtempSync(join(tmpdir(), "eport-cli-"));
+    runEport(["init"], home);
+
+    const setup = runEport(["tunnel", "setup", "quick"], home);
+    expect(setup.status).toBe(0);
+    expect(setup.stdout).toContain("changes on restart");
+
+    const config = JSON.parse(readFileSync(join(home, ".eport", "config"), "utf8"));
+    expect(config.tunnelMode).toBe("quick");
+  });
+
+  it("up --tunnel none does not persist session override", () => {
+    home = mkdtempSync(join(tmpdir(), "eport-cli-"));
+    runEport(["init"], home);
+    runEport(["tunnel", "setup", "quick"], home);
+
+    const child = spawnSync(
+      "bun",
+      ["run", cliEntry, "up", "--tunnel", "none", "--port", "18787"],
+      {
+        cwd: repoRoot,
+        env: { ...process.env, HOME: home },
+        encoding: "utf8",
+        timeout: 1500,
+      },
+    );
+
+    expect(child.stdout).toContain("tunnel: none");
+    const config = JSON.parse(readFileSync(join(home, ".eport", "config"), "utf8"));
+    expect(config.tunnelMode).toBe("quick");
   });
 
   it("up --tunnel none prints listen URL", () => {
