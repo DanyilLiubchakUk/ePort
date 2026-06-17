@@ -17,8 +17,9 @@ import {
   ROOT_HELP,
 } from "./help.ts";
 import { parseArgv } from "./parser.ts";
+import { runTunnel } from "./tunnel-commands.ts";
 
-const IMPLEMENTED_COMMANDS = new Set(["init", "api-key", "auth", "up"]);
+const IMPLEMENTED_COMMANDS = new Set(["init", "api-key", "auth", "up", "tunnel"]);
 
 function printHelp(command?: string, subcommand?: string): void {
   const text = helpForCommand(command, subcommand);
@@ -104,6 +105,11 @@ export async function runCli(argv: string[], home = homedir()): Promise<number> 
     }
     case "up":
       return runUp(store, home, parsed.session, parsed.port);
+    case "tunnel":
+      return runTunnel(store, parsed.subcommand, parsed.rest, {
+        token: parsed.token,
+        hostname: parsed.hostname,
+      });
     default:
       if (!IMPLEMENTED_COMMANDS.has(parsed.command)) {
         return runNotImplemented(parsed.command);

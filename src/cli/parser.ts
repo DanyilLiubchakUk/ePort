@@ -6,6 +6,8 @@ export interface ParsedArgv {
   rest: string[];
   session: SessionFlags;
   port?: number;
+  token?: string;
+  hostname?: string;
   help: boolean;
   version: boolean;
   json: boolean;
@@ -28,31 +30,33 @@ export function parseArgv(argv: string[]): ParsedArgv {
   let version = false;
   let json = false;
   let port: number | undefined;
+  let tunnelToken: string | undefined;
+  let hostname: string | undefined;
 
   for (let i = 0; i < argv.length; i += 1) {
-    const token = argv[i];
+    const arg = argv[i];
 
-    if (token === "-h" || token === "--help") {
+    if (arg === "-h" || arg === "--help") {
       help = true;
       continue;
     }
-    if (token === "-V" || token === "--version") {
+    if (arg === "-V" || arg === "--version") {
       version = true;
       continue;
     }
-    if (token === "--json") {
+    if (arg === "--json") {
       json = true;
       continue;
     }
-    if (token === "--verbose") {
+    if (arg === "--verbose") {
       session.verbose = true;
       continue;
     }
-    if (token === "--fast") {
+    if (arg === "--fast") {
       session.fast = true;
       continue;
     }
-    if (token === "--tunnel") {
+    if (arg === "--tunnel") {
       const value = argv[++i];
       if (!value || isFlag(value)) {
         throw new Error("--tunnel requires a mode: named, quick, or none");
@@ -64,7 +68,7 @@ export function parseArgv(argv: string[]): ParsedArgv {
       session.tunnel = mode;
       continue;
     }
-    if (token === "--port") {
+    if (arg === "--port") {
       const value = argv[++i];
       if (!value || isFlag(value)) {
         throw new Error("--port requires a number");
@@ -76,8 +80,24 @@ export function parseArgv(argv: string[]): ParsedArgv {
       port = parsedPort;
       continue;
     }
+    if (arg === "--token") {
+      const value = argv[++i];
+      if (!value || isFlag(value)) {
+        throw new Error("--token requires a value");
+      }
+      tunnelToken = value;
+      continue;
+    }
+    if (arg === "--hostname") {
+      const value = argv[++i];
+      if (!value || isFlag(value)) {
+        throw new Error("--hostname requires a value");
+      }
+      hostname = value;
+      continue;
+    }
 
-    positional.push(token);
+    positional.push(arg);
   }
 
   const [command, subcommand, ...rest] = positional;
@@ -88,6 +108,8 @@ export function parseArgv(argv: string[]): ParsedArgv {
     rest,
     session,
     port,
+    token: tunnelToken,
+    hostname,
     help,
     version,
     json,

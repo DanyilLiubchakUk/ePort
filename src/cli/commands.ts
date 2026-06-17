@@ -3,6 +3,11 @@ import type { SessionFlags } from "../config/types.ts";
 import { startEdgeServer } from "../edge/index.ts";
 import { AuthManager, formatAuthStatus } from "../auth/index.ts";
 import type { Provider } from "../auth/index.ts";
+import {
+  composeNamedPublicBaseUrl,
+  printCursorPasteBlock,
+  TunnelManager,
+} from "../tunnel/index.ts";
 
 export function runInit(store: ConfigStore, session: SessionFlags): number {
   const profile = store.ensureApiKey();
@@ -32,7 +37,18 @@ export function runApiKeyRotate(store: ConfigStore): number {
   console.log("");
   console.log("Proxy API key rotated. Old key is invalid immediately.");
   console.log("Update Cursor → Settings → Models → OpenAI → API key, then Verify.");
-  console.log("(Full Base URL paste block ships in a later release.)");
+
+  const hostname = profile.tunnel.hostname?.trim();
+  if (hostname && profile.tunnelMode !== "none") {
+    printCursorPasteBlock({
+      baseUrl: composeNamedPublicBaseUrl(hostname),
+      proxyApiKey: profile.proxyApiKey,
+      tunnelMode: profile.tunnelMode,
+    });
+  } else {
+    console.log("(Run eport up for the full Base URL paste block.)");
+  }
+
   return 0;
 }
 
@@ -81,15 +97,8 @@ export async function runUp(
 ): Promise<number> {
   const profile = store.ensureApiKey();
   const tunnelMode = session.tunnel ?? profile.tunnelMode;
-
-  if (tunnelMode !== "none") {
-    console.error(
-      "Named and quick tunnel modes ship in slice 05. Use: eport up --tunnel none",
-    );
-    return 1;
-  }
-
   const listenPort = port ?? 8787;
+
   const server = startEdgeServer({
     home,
     port: listenPort,
@@ -100,22 +109,50 @@ export async function runUp(
     verbose: session.verbose,
   });
 
-  console.log(`ePort listening on http://${server.host}:${server.port}`);
-  console.log(`  local base URL: ${server.baseUrl}`);
-  console.log("  tunnel: none (public paste block ships in slice 05)");
-  if (profile.proxyApiKey) {
-    console.log("  proxy API key: optional for --tunnel none");
-    console.log(`  curl example: curl ${server.baseUrl.replace(/\/v1$/, "")}/health`);
-  }
-
-  await new Promise<void>((resolve) => {
-    const shutdown = () => {
-      server.stop();
-      resolve();
-    };
-    process.on("SIGINT", shutdown);
-    process.on("SIGTERM", shutdown);
+  const tunnel = new TunnelManager({
+    namedConfig: profile.tunnel,
+    verbose: session.verbose,
   });
 
-  return 0;
+  try {
+    const tunnelResult = await tunnel.start(tunnelMode, server.port);
+
+    console.log(`ePort listening on http://${server.host}:${server.port}`);
+    console.log(`  local base URL: ${server.baseUrl}`);
+    console.log(`  tunnel: ${tunnelMode}`);
+
+    if (tunnelMode === "none") {
+      if (profile.proxyApiKey) {
+        console.log("  proxy API key: optional for --tunnel none");
+        console.log(`  curl example: curl ${server.baseUrl.replace(/\/v1$/, "")}/health`);
+      }
+    } else if (tunnelResult.publicBaseUrl) {
+      printCursorPasteBlock({
+        baseUrl: tunnelResult.publicBaseUrl,
+        proxyApiKey: profile.proxyApiKey,
+        tunnelMode,
+      });
+    }
+
+    await new Promise<void>((resolve) => {
+      const shutdown = async () => {
+        await tunnel.stop();
+        server.stop();
+        resolve();
+      };
+      process.on("SIGINT", () => {
+        void shutdown();
+      });
+      process.on("SIGTERM", () => {
+        void shutdown();
+      });
+    });
+
+    return 0;
+  } catch (error) {
+    server.stop();
+    await tunnel.stop();
+    console.error(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
 }
