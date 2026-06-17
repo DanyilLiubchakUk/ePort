@@ -111,3 +111,45 @@ ePort is not locked to a single language or runtime. Components may use differen
 
 ## Distribution
 How users install ePort. **v1:** npm registry — global install (`npm i -g eport`) or one-shot run (`bunx eport`); published as a free public npm package. **Standalone binaries** (macOS app, Windows `.exe`) deferred until a Tauri/Electron desktop app or first stable release.
+
+## ePort Calculated Usage
+Consumed Codex or Claude usage measured by ePort from proxied requests and written as local ccusage-shaped data for eUsage to read. Rolls into existing Codex and Claude provider views — not a separate AI provider.
+
+- Use when: Talking about token and estimated-cost totals from Cursor traffic routed through ePort.
+- Do not use for: Provider quota percentages, raw request logs, or native CLI-only usage that never passed through ePort.
+- Related terms: Provider account fingerprint, Usage data identity, Daily usage snapshot.
+
+## Usage data identity
+Stable key eUsage uses to upsert one cumulative daily usage row instead of appending duplicates. Format: `eport:<provider>:<providerAccountFingerprint>:daily:<YYYY-MM-DD>`.
+
+- Use when: Talking about deduplication across multiple ePort syncs or desktop refreshes within the same reporting day.
+- Do not use for: Individual request ids, upstream `responseId`, or developer device ids.
+- Related terms: ePort Calculated Usage, Daily usage snapshot, Provider account fingerprint.
+
+## Daily usage snapshot
+Cumulative token (and optional cost) totals for one provider account on one calendar reporting day. Each new ePort write replaces the previous snapshot for the same **usage data identity**.
+
+- Use when: Talking about what eUsage reads from ePort calculated rows.
+- Do not use for: Per-request increments or provider quota state.
+- Related terms: ePort Calculated Usage, Usage data identity, Local consumed usage (eUsage).
+
+## Provider account fingerprint
+Privacy-safe identifier for one subscription account in ePort's **account queue**. Groups calculated usage so eUsage multi-account features map correctly.
+
+- Use when: ePort records which Codex or Claude account served a proxied request.
+- Do not use for: Raw auth tokens, email, or the developer's eUsage label.
+- Related terms: Account queue, Usage data identity, ePort Calculated Usage.
+
+## Native usage tree
+The provider-local directory ccusage already scans for session JSONL. ePort uses the **default native home** (`~/.codex` / `~/.claude`): native CLI traffic uses the normal layout (`sessions/`, `projects/…`); ePort-proxied traffic uses **per-account partitions** under that home (e.g. `~/.codex/eport-accounts/<fingerprint>/`).
+
+- Use when: Talking about where ePort Calculated Usage is persisted for eUsage to discover native and ePort account-partitioned usage.
+- Do not use for: ePort config (`~/.eport/config`), or the `authPath` used only for upstream credentials.
+- Related terms: ePort Calculated Usage, Provider account fingerprint, Account queue.
+
+## ePort account partition
+A per-subscription directory under the native provider home where ePort writes ccusage-compatible JSONL for proxied requests only, keyed by **provider account fingerprint**.
+
+- Use when: Splitting ePort Calculated Usage across multiple queue accounts on one machine.
+- Do not use for: Native CLI session logs in `sessions/` or `projects/`.
+- Related terms: Native usage tree, Provider account fingerprint, Account queue.
