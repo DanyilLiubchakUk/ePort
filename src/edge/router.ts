@@ -336,6 +336,7 @@ function createCodexUsageCaptureHandler(
 ): (capture: CodexCompletedUsageCapture) => void {
   const activeEntry = deps.auth.accounts.getActiveEntry("codex");
   const providerAccountFingerprint = codexUsageFingerprint(activeEntry, credentials);
+  const providerAccountIdentity = codexProviderAccountIdentity(credentials);
   const recorder = deps.codexUsageRecorder ?? recordCodexCalculatedUsage;
 
   return (capture) => {
@@ -343,6 +344,7 @@ function createCodexUsageCaptureHandler(
       recorder({
         home: deps.home,
         providerAccountFingerprint,
+        providerAccountIdentity,
         responseId: capture.responseId,
         clientModel,
         bareModelId: route.bareModelId,
@@ -524,14 +526,27 @@ function codexUsageFingerprint(
   activeEntry: AccountEntry | null,
   credentials: Awaited<ReturnType<AuthManager["getCodexCredentials"]>>,
 ): string {
-  const queuedIdentity =
+  const queuedFallbackIdentity =
     activeEntry?.authPath === credentials.storePath
       ? activeEntry.accountKey || activeEntry.id
       : null;
-  const identity = queuedIdentity || credentials.accountId;
+  const identity = credentials.accountId || queuedFallbackIdentity;
   return identity
     ? providerAccountFingerprintFor("codex", identity)
     : fallbackProviderAccountFingerprintFor("codex");
+}
+
+function codexProviderAccountIdentity(
+  credentials: Awaited<ReturnType<AuthManager["getCodexCredentials"]>>,
+) {
+  const accountId = credentials.accountId.trim();
+  return accountId
+    ? {
+        identityKind: "providerAccountId" as const,
+        identityValue: accountId,
+        identityConfidence: "high" as const,
+      }
+    : null;
 }
 
 function claudeUsageFingerprint(

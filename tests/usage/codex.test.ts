@@ -7,6 +7,7 @@ import {
   fallbackProviderAccountFingerprintFor,
   getCodexEportAccountPartitionPath,
   getCodexEportDailySnapshotPath,
+  getCodexEportProviderAccountIdentityPath,
   getCodexEportRawEventsPath,
   getCodexEportSessionFilePath,
   normalizeCodexUsage,
@@ -36,11 +37,17 @@ describe("Codex calculated usage", () => {
   it("writes raw events, daily snapshots, and Codex session rows inside the account partition", () => {
     const home = mkdtempSync(join(tmpdir(), "eport-codex-usage-"));
     const fingerprint = providerAccountFingerprintFor("codex", "acct-test");
+    const providerAccountIdentity = {
+      identityKind: "providerAccountId" as const,
+      identityValue: "acct-test",
+      identityConfidence: "high" as const,
+    };
 
     try {
       recordCodexCalculatedUsage({
         home,
         providerAccountFingerprint: fingerprint,
+        providerAccountIdentity,
         responseId: "resp_1",
         clientModel: "gpt-5.5xhigh-fast",
         bareModelId: "gpt-5.5",
@@ -59,6 +66,7 @@ describe("Codex calculated usage", () => {
       recordCodexCalculatedUsage({
         home,
         providerAccountFingerprint: fingerprint,
+        providerAccountIdentity,
         responseId: "resp_2",
         clientModel: "gpt-5.5",
         bareModelId: "gpt-5.5",
@@ -83,12 +91,20 @@ describe("Codex calculated usage", () => {
       expect(rawEvents[0]).toMatchObject({
         provider: "codex",
         providerAccountFingerprint: fingerprint,
+        providerAccountIdentity,
         responseId: "resp_1",
         clientModel: "gpt-5.5xhigh-fast",
         bareModelId: "gpt-5.5",
         effort: "xhigh",
         fastTier: true,
         finish: "stop",
+      });
+
+      expect(readJsonFile(getCodexEportProviderAccountIdentityPath(home, fingerprint))).toMatchObject({
+        version: 1,
+        provider: "codex",
+        providerAccountFingerprint: fingerprint,
+        providerAccountIdentity,
       });
 
       const snapshot = JSON.parse(
@@ -98,6 +114,7 @@ describe("Codex calculated usage", () => {
         dataIdentity: `eport:codex:${fingerprint}:daily:2026-06-17`,
         provider: "codex",
         providerAccountFingerprint: fingerprint,
+        providerAccountIdentity,
         date: "2026-06-17",
         inputTokens: 300,
         cachedInputTokens: 90,
@@ -129,6 +146,10 @@ describe("Codex calculated usage", () => {
               output_tokens: 25,
               reasoning_output_tokens: 10,
               total_tokens: 125,
+            },
+            metadata: {
+              providerAccountFingerprint: fingerprint,
+              providerAccountIdentity,
             },
           },
         },

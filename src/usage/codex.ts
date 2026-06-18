@@ -27,9 +27,16 @@ export interface CodexUsageTotals {
   totalTokens: number;
 }
 
+export interface CodexProviderAccountIdentity {
+  identityKind: "providerAccountId";
+  identityValue: string;
+  identityConfidence: "high";
+}
+
 export interface RecordCodexCalculatedUsageInput {
   home: string;
   providerAccountFingerprint: string;
+  providerAccountIdentity?: CodexProviderAccountIdentity | null;
   responseId: string | null;
   clientModel: string;
   bareModelId: string;
@@ -45,6 +52,7 @@ export interface CodexCalculatedUsageRawEvent {
   recordedAt: string;
   provider: "codex";
   providerAccountFingerprint: string;
+  providerAccountIdentity?: CodexProviderAccountIdentity;
   responseId: string | null;
   clientModel: string;
   bareModelId: string;
@@ -59,6 +67,7 @@ export interface CodexDailyUsageSnapshot extends CodexUsageTotals {
   dataIdentity: string;
   provider: "codex";
   providerAccountFingerprint: string;
+  providerAccountIdentity?: CodexProviderAccountIdentity;
   date: string;
   costUSD: null;
   costSource: "unknown";
@@ -78,6 +87,9 @@ export function recordCodexCalculatedUsage(
     recordedAt,
     provider: "codex",
     providerAccountFingerprint: input.providerAccountFingerprint,
+    ...(input.providerAccountIdentity
+      ? { providerAccountIdentity: input.providerAccountIdentity }
+      : {}),
     responseId: input.responseId,
     clientModel: input.clientModel,
     bareModelId: input.bareModelId,
@@ -89,6 +101,7 @@ export function recordCodexCalculatedUsage(
   };
 
   const rawEventsPath = getCodexEportRawEventsPath(input.home, input.providerAccountFingerprint);
+  writeProviderAccountIdentity(input.home, input.providerAccountFingerprint, input.providerAccountIdentity);
   appendUniqueJsonLine(rawEventsPath, event, event.id, readEventId);
   const canonicalEvent = readRawEvents(rawEventsPath).find((row) => row.id === event.id) ?? event;
   upsertJsonLine(
@@ -155,6 +168,17 @@ export function getCodexEportRawEventsPath(
   );
 }
 
+export function getCodexEportProviderAccountIdentityPath(
+  home: string,
+  providerAccountFingerprint: string,
+): string {
+  return joinHomePath(
+    getCodexEportAccountPartitionPath(home, providerAccountFingerprint),
+    "eport",
+    "provider-account.json",
+  );
+}
+
 export function getCodexEportDailySnapshotPath(
   home: string,
   providerAccountFingerprint: string,
@@ -189,9 +213,33 @@ function writeDailySnapshot(
 ): void {
   const day = reportingDay(event.recordedAt);
   const rawEvents = readRawEvents(getCodexEportRawEventsPath(home, providerAccountFingerprint));
-  const snapshot = buildDailySnapshot(rawEvents, providerAccountFingerprint, day, event.recordedAt);
+  const snapshot = buildDailySnapshot(
+    rawEvents,
+    providerAccountFingerprint,
+    day,
+    event.recordedAt,
+    event.providerAccountIdentity,
+  );
   const path = getCodexEportDailySnapshotPath(home, providerAccountFingerprint, day);
   writeJsonFileAtomic(path, snapshot);
+}
+
+function writeProviderAccountIdentity(
+  home: string,
+  providerAccountFingerprint: string,
+  identity?: CodexProviderAccountIdentity | null,
+): void {
+  if (!identity) return;
+  writeJsonFileAtomic(
+    getCodexEportProviderAccountIdentityPath(home, providerAccountFingerprint),
+    {
+      version: 1,
+      provider: "codex",
+      providerAccountFingerprint,
+      providerAccountIdentity: identity,
+      updatedAt: new Date().toISOString(),
+    },
+  );
 }
 
 function buildDailySnapshot(
@@ -199,14 +247,17 @@ function buildDailySnapshot(
   providerAccountFingerprint: string,
   day: string,
   updatedAt: string,
+  fallbackIdentity?: CodexProviderAccountIdentity,
 ): CodexDailyUsageSnapshot {
   const totals = emptyTotals();
   const modelTotals = new Map<string, CodexUsageTotals>();
+  let providerAccountIdentity = fallbackIdentity;
 
   for (const event of events) {
     if (event.provider !== "codex") continue;
     if (event.providerAccountFingerprint !== providerAccountFingerprint) continue;
     if (reportingDay(event.recordedAt) !== day) continue;
+    providerAccountIdentity = providerAccountIdentity ?? event.providerAccountIdentity;
     addTotals(totals, event.normalizedUsage);
     const model = modelTotals.get(event.bareModelId) ?? emptyTotals();
     addTotals(model, event.normalizedUsage);
@@ -217,6 +268,7 @@ function buildDailySnapshot(
     dataIdentity: `eport:codex:${providerAccountFingerprint}:daily:${day}`,
     provider: "codex",
     providerAccountFingerprint,
+    ...(providerAccountIdentity ? { providerAccountIdentity } : {}),
     date: day,
     ...totals,
     costUSD: null,
@@ -263,6 +315,9 @@ function toCodexSessionRow(event: CodexCalculatedUsageRawEvent): Record<string, 
         metadata: {
           source: "eport",
           providerAccountFingerprint: event.providerAccountFingerprint,
+          ...(event.providerAccountIdentity
+            ? { providerAccountIdentity: event.providerAccountIdentity }
+            : {}),
           responseId: event.responseId,
           eventId: event.id,
           clientModel: event.clientModel,

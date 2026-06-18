@@ -281,6 +281,11 @@ describe("edge router", () => {
     await response.text();
 
     const fingerprint = providerAccountFingerprintFor("codex", "acct-test");
+    const providerAccountIdentity = {
+      identityKind: "providerAccountId",
+      identityValue: "acct-test",
+      identityConfidence: "high",
+    };
     const rawEvents = readFileSync(getCodexEportRawEventsPath(home, fingerprint), "utf8")
       .trim()
       .split("\n")
@@ -289,6 +294,7 @@ describe("edge router", () => {
     expect(rawEvents[0]).toMatchObject({
       provider: "codex",
       providerAccountFingerprint: fingerprint,
+      providerAccountIdentity,
       responseId: "resp_usage_stop",
       clientModel: "gpt-5.5xhigh-fast",
       bareModelId: "gpt-5.5",
@@ -309,6 +315,7 @@ describe("edge router", () => {
     ) as Record<string, unknown>;
     expect(snapshot).toMatchObject({
       dataIdentity: `eport:codex:${fingerprint}:daily:2026-06-17`,
+      providerAccountIdentity,
       inputTokens: 100,
       cachedInputTokens: 40,
       outputTokens: 25,
@@ -455,6 +462,67 @@ describe("edge router", () => {
         readFileSync(getCodexEportDailySnapshotPath(home, secondFingerprint, "2026-06-17"), "utf8"),
       ),
     ).toMatchObject({ totalTokens: 22, providerAccountFingerprint: secondFingerprint });
+  });
+
+  it("uses the Codex provider account id for usage ownership", async () => {
+    const { baseUrl } = startTestServer({
+      configureAuth: (testAuth, testHome) => {
+        const authPath = getAccountAuthPath(testHome, "codex", "queue-entry-id");
+        const file = makeCodexAuthFile(secondsFromNow(3600));
+        file.tokens.account_id = "acct-real-provider";
+        file.tokens.access_token = makeTestJwt(secondsFromNow(3600), "acct-real-provider");
+        file.tokens.id_token = file.tokens.access_token;
+        writeCodexAuthFile(authPath, file);
+        testAuth.accounts.addAccount("codex", {
+          id: "queue-entry-id",
+          authPath,
+          accountKey: "local-queue-label",
+        });
+      },
+      codexFetchFn: async () =>
+        codexSseResponse([
+          { type: "response.output_text.delta", delta: "ok" },
+          {
+            type: "response.completed",
+            response: {
+              id: "resp_real_account",
+              status: "completed",
+              created_at: Date.parse("2026-06-17T16:00:00.000Z") / 1000,
+              usage: { input_tokens: 40, output_tokens: 5, total_tokens: 45 },
+            },
+          },
+        ]),
+    });
+
+    const response = await fetch(`${baseUrl}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        input: [{ role: "user", content: "real account" }],
+        stream: true,
+      }),
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+
+    const expectedFingerprint = providerAccountFingerprintFor("codex", "acct-real-provider");
+    const wrongFingerprint = providerAccountFingerprintFor("codex", "local-queue-label");
+    expect(existsSync(getCodexEportRawEventsPath(home, expectedFingerprint))).toBe(true);
+    expect(existsSync(getCodexEportRawEventsPath(home, wrongFingerprint))).toBe(false);
+    expect(
+      JSON.parse(
+        readFileSync(getCodexEportDailySnapshotPath(home, expectedFingerprint, "2026-06-17"), "utf8"),
+      ),
+    ).toMatchObject({
+      providerAccountFingerprint: expectedFingerprint,
+      providerAccountIdentity: {
+        identityKind: "providerAccountId",
+        identityValue: "acct-real-provider",
+        identityConfidence: "high",
+      },
+      totalTokens: 45,
+    });
   });
 
   it("logs failed Codex usage writes without corrupting the client stream", async () => {
