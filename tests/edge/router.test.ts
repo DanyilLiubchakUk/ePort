@@ -286,7 +286,7 @@ describe("edge router", () => {
       identityValue: "acct-test",
       identityConfidence: "high",
     };
-    const rawEvents = readFileSync(getCodexEportRawEventsPath(home, fingerprint), "utf8")
+    const rawEvents = readFileSync(getCodexEportRawEventsPath(home, fingerprint, "2026-06-17"), "utf8")
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line) as Record<string, unknown>);
@@ -368,7 +368,7 @@ describe("edge router", () => {
     expect(text).toContain('"finish_reason":"tool_calls"');
 
     const fingerprint = providerAccountFingerprintFor("codex", "acct-test");
-    const rawEvents = readFileSync(getCodexEportRawEventsPath(home, fingerprint), "utf8")
+    const rawEvents = readFileSync(getCodexEportRawEventsPath(home, fingerprint, "2026-06-17"), "utf8")
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line) as Record<string, unknown>);
@@ -508,8 +508,8 @@ describe("edge router", () => {
 
     const expectedFingerprint = providerAccountFingerprintFor("codex", "acct-real-provider");
     const wrongFingerprint = providerAccountFingerprintFor("codex", "local-queue-label");
-    expect(existsSync(getCodexEportRawEventsPath(home, expectedFingerprint))).toBe(true);
-    expect(existsSync(getCodexEportRawEventsPath(home, wrongFingerprint))).toBe(false);
+    expect(existsSync(getCodexEportRawEventsPath(home, expectedFingerprint, "2026-06-17"))).toBe(true);
+    expect(existsSync(getCodexEportRawEventsPath(home, wrongFingerprint, "2026-06-17"))).toBe(false);
     expect(
       JSON.parse(
         readFileSync(getCodexEportDailySnapshotPath(home, expectedFingerprint, "2026-06-17"), "utf8"),
@@ -762,7 +762,7 @@ describe("edge router", () => {
     await response.text();
 
     const fingerprint = providerAccountFingerprintFor("claude", accountKey);
-    const rawEvents = readFileSync(getClaudeEportRawEventsPath(home, fingerprint), "utf8")
+    const rawEvents = readFileSync(getClaudeEportRawEventsPath(home, fingerprint, "2026-06-17"), "utf8")
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line) as Record<string, unknown>);
@@ -860,7 +860,8 @@ describe("edge router", () => {
     expect(text).toContain('"finish_reason":"tool_calls"');
 
     const fingerprint = providerAccountFingerprintFor("claude", accountKey);
-    const rawEvents = readFileSync(getClaudeEportRawEventsPath(home, fingerprint), "utf8")
+    const rawDay = new Date().toISOString().slice(0, 10);
+    const rawEvents = readFileSync(getClaudeEportRawEventsPath(home, fingerprint, rawDay), "utf8")
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line) as Record<string, unknown>);
@@ -1470,8 +1471,8 @@ describe("edge router", () => {
 
     const exhaustedFingerprint = providerAccountFingerprintFor("codex", "acct-1");
     const servedFingerprint = providerAccountFingerprintFor("codex", "acct-2");
-    expect(existsSync(getCodexEportRawEventsPath(home, exhaustedFingerprint))).toBe(false);
-    const rawEvents = readFileSync(getCodexEportRawEventsPath(home, servedFingerprint), "utf8")
+    expect(existsSync(getCodexEportRawEventsPath(home, exhaustedFingerprint, "2026-06-17"))).toBe(false);
+    const rawEvents = readFileSync(getCodexEportRawEventsPath(home, servedFingerprint, "2026-06-17"), "utf8")
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line) as Record<string, unknown>);

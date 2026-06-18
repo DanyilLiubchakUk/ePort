@@ -57,6 +57,14 @@ function resolveFastTier(
     return true;
   }
 
+  if (config.globalFastOverride) {
+    return true;
+  }
+
+  if (session?.fast) {
+    return true;
+  }
+
   const bodyFast = extractBodyFastTier(body);
   if (bodyFast === true) {
     return true;
@@ -66,14 +74,6 @@ function resolveFastTier(
   }
 
   if (config.modelDefaults[bareModelId]?.fast) {
-    return true;
-  }
-
-  if (config.globalFastOverride) {
-    return true;
-  }
-
-  if (session?.fast) {
     return true;
   }
 

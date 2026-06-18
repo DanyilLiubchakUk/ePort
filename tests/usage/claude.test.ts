@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, posix, win32 } from "node:path";
+import { dirname, join, posix, win32 } from "node:path";
 
 import {
   fallbackProviderAccountFingerprintFor,
@@ -77,7 +77,7 @@ describe("Claude calculated usage", () => {
         },
       });
 
-      const rawEvents = readFileSync(getClaudeEportRawEventsPath(home, fingerprint), "utf8")
+      const rawEvents = readFileSync(getClaudeEportRawEventsPath(home, fingerprint, "2026-06-17"), "utf8")
         .trim()
         .split("\n")
         .map((line) => JSON.parse(line) as Record<string, unknown>);
@@ -237,7 +237,7 @@ describe("Claude calculated usage", () => {
         usage: { input_tokens: 5, output_tokens: 1 },
       });
 
-      expect(existsSync(getClaudeEportRawEventsPath(home, fallback))).toBe(true);
+      expect(existsSync(getClaudeEportRawEventsPath(home, fallback, "2026-06-17"))).toBe(true);
       expect(readJsonFile(getClaudeEportDailySnapshotPath(home, fallback, "2026-06-17"))).toMatchObject({
         dataIdentity: `eport:claude:${fallback}:daily:2026-06-17`,
         providerAccountFingerprint: fallback,
@@ -271,7 +271,7 @@ describe("Claude calculated usage", () => {
         usage: { input_tokens: 1000, output_tokens: 2000 },
       });
 
-      expect(readJsonLines(getClaudeEportRawEventsPath(home, fingerprint))).toHaveLength(1);
+      expect(readJsonLines(getClaudeEportRawEventsPath(home, fingerprint, "2026-06-17"))).toHaveLength(1);
       expect(
         readJsonLines(
           getClaudeEportSessionFilePath(home, fingerprint, "2026-06-17T19:00:00.000Z"),
@@ -282,6 +282,63 @@ describe("Claude calculated usage", () => {
         outputTokens: 2,
         totalTokens: 12,
       });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("uses legacy raw events as canonical data during shard migration", () => {
+    const home = mkdtempSync(join(tmpdir(), "eport-claude-legacy-raw-"));
+    const fingerprint = providerAccountFingerprintFor("claude", "claude-legacy");
+    const legacyRawEventsPath = getClaudeEportRawEventsPath(home, fingerprint);
+    const legacyEvent = {
+      id: `eport:claude:${fingerprint}:msg_legacy`,
+      recordedAt: "2026-06-17T20:00:00.000Z",
+      provider: "claude",
+      providerAccountFingerprint: fingerprint,
+      responseId: "msg_legacy",
+      clientModel: "opus-4.8",
+      bareModelId: "opus-4.8",
+      effort: null,
+      finish: "stop",
+      usage: { input_tokens: 10, output_tokens: 2 },
+      normalizedUsage: {
+        inputTokens: 10,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+        outputTokens: 2,
+        totalTokens: 12,
+        serverToolUse: {},
+      },
+    };
+
+    try {
+      mkdirSync(dirname(legacyRawEventsPath), { recursive: true });
+      writeFileSync(legacyRawEventsPath, `${JSON.stringify(legacyEvent)}\n`, "utf8");
+
+      recordClaudeCalculatedUsage({
+        home,
+        providerAccountFingerprint: fingerprint,
+        responseId: "msg_legacy",
+        clientModel: "opus-4.8",
+        bareModelId: "opus-4.8",
+        effort: null,
+        finish: "stop",
+        recordedAt: "2026-06-17T20:05:00.000Z",
+        usage: { input_tokens: 1000, output_tokens: 2000 },
+      });
+
+      expect(existsSync(getClaudeEportRawEventsPath(home, fingerprint, "2026-06-17"))).toBe(false);
+      expect(readJsonFile(getClaudeEportDailySnapshotPath(home, fingerprint, "2026-06-17"))).toMatchObject({
+        inputTokens: 10,
+        outputTokens: 2,
+        totalTokens: 12,
+      });
+      expect(
+        readJsonLines(
+          getClaudeEportSessionFilePath(home, fingerprint, "2026-06-17T20:00:00.000Z"),
+        ),
+      ).toHaveLength(1);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

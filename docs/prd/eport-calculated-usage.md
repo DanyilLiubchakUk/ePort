@@ -97,6 +97,7 @@ The result: eUsage shows normal native Codex/Claude usage plus ePort Cursor usag
 - ePort Calculated Usage is not a separate AI provider. It rolls into existing Codex and Claude provider views in eUsage.
 - The account that serves a request is independent of the path where usage is written. Routing continues to use the active account queue entry and its auth path; usage ownership uses the same queue entry's Provider Account fingerprint.
 - ePort writes raw completed-response events and cumulative Daily usage snapshots. eUsage reads calculated daily rows, not raw request events.
+- Raw event JSONL is day-sharded under each Provider Account partition and processed line by line, so writes never need to load a full usage history file into memory. Daily snapshots update incrementally after event dedupe and remain the durable local usage facts.
 - Usage identity is grouped by provider, Provider Account fingerprint, and reporting day.
 - Unknown account usage is preserved under a provider-specific fallback account instead of being dropped.
 - Native Codex CLI usage remains in the normal native sessions tree. ePort-proxied Codex Cursor traffic is written under per-account ePort account partitions below the native Codex home.

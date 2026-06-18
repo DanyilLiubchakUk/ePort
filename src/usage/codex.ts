@@ -1,8 +1,10 @@
 import {
   appendUniqueJsonLine,
+  findJsonLine,
+  forEachJsonLine,
   joinHomePath,
   normalizeRecordedAt,
-  readJsonLines,
+  readJsonFile,
   readRecord,
   readToken,
   reportingDay,
@@ -27,6 +29,15 @@ export interface CodexUsageTotals {
   totalTokens: number;
 }
 
+export interface CodexDailyUsageTotals {
+  inputTokens: number;
+  rawInputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+  totalTokens: number;
+}
+
 export interface CodexProviderAccountIdentity {
   identityKind: "providerAccountId";
   identityValue: string;
@@ -45,6 +56,7 @@ export interface RecordCodexCalculatedUsageInput {
   finish: CodexUsageFinish;
   usage: Record<string, unknown>;
   recordedAt?: string | number | null;
+  reportingTimeZone?: string;
 }
 
 export interface CodexCalculatedUsageRawEvent {
@@ -63,7 +75,7 @@ export interface CodexCalculatedUsageRawEvent {
   normalizedUsage: CodexUsageTotals;
 }
 
-export interface CodexDailyUsageSnapshot extends CodexUsageTotals {
+export interface CodexDailyUsageSnapshot extends CodexDailyUsageTotals {
   dataIdentity: string;
   provider: "codex";
   providerAccountFingerprint: string;
@@ -72,7 +84,7 @@ export interface CodexDailyUsageSnapshot extends CodexUsageTotals {
   costUSD: null;
   costSource: "unknown";
   updatedAt: string;
-  models: Array<CodexUsageTotals & { bareModelId: string }>;
+  models: Array<CodexDailyUsageTotals & { bareModelId: string }>;
 }
 
 export type CodexUsageRecorder = (input: RecordCodexCalculatedUsageInput) => void;
@@ -100,21 +112,51 @@ export function recordCodexCalculatedUsage(
     normalizedUsage,
   };
 
-  const rawEventsPath = getCodexEportRawEventsPath(input.home, input.providerAccountFingerprint);
   writeProviderAccountIdentity(input.home, input.providerAccountFingerprint, input.providerAccountIdentity);
-  appendUniqueJsonLine(rawEventsPath, event, event.id, readEventId);
-  const canonicalEvent = readRawEvents(rawEventsPath).find((row) => row.id === event.id) ?? event;
+  let canonicalEvent = findRawEvent(
+    input.home,
+    input.providerAccountFingerprint,
+    event.id,
+    recordedAt,
+    input.reportingTimeZone,
+  );
+  let storedNewEvent = false;
+  if (!canonicalEvent) {
+    const shardedRawEventsPath = getCodexEportRawEventsPath(
+      input.home,
+      input.providerAccountFingerprint,
+      recordedAt,
+      input.reportingTimeZone,
+    );
+    storedNewEvent = appendUniqueJsonLine(shardedRawEventsPath, event, event.id, readEventId);
+    canonicalEvent = storedNewEvent
+      ? event
+      : findRawEvent(
+          input.home,
+          input.providerAccountFingerprint,
+          event.id,
+          recordedAt,
+          input.reportingTimeZone,
+        ) ?? event;
+  }
   upsertJsonLine(
     getCodexEportSessionFilePath(
       input.home,
       input.providerAccountFingerprint,
       canonicalEvent.recordedAt,
+      input.reportingTimeZone,
     ),
     toCodexSessionRow(canonicalEvent),
     canonicalEvent.id,
     readCodexSessionEventId,
   );
-  writeDailySnapshot(input.home, input.providerAccountFingerprint, canonicalEvent);
+  writeDailySnapshot(
+    input.home,
+    input.providerAccountFingerprint,
+    canonicalEvent,
+    storedNewEvent,
+    input.reportingTimeZone,
+  );
 
   return canonicalEvent;
 }
@@ -160,9 +202,20 @@ export function getCodexEportAccountPartitionPath(
 export function getCodexEportRawEventsPath(
   home: string,
   providerAccountFingerprint: string,
+  recordedAt?: string,
+  reportingTimeZone?: string,
 ): string {
+  const partitionPath = getCodexEportAccountPartitionPath(home, providerAccountFingerprint);
+  if (recordedAt) {
+    return joinHomePath(
+      partitionPath,
+      "eport",
+      "raw-events",
+      `${reportingDay(recordedAt, reportingTimeZone)}.jsonl`,
+    );
+  }
   return joinHomePath(
-    getCodexEportAccountPartitionPath(home, providerAccountFingerprint),
+    partitionPath,
     "eport",
     "raw-events.jsonl",
   );
@@ -196,8 +249,9 @@ export function getCodexEportSessionFilePath(
   home: string,
   providerAccountFingerprint: string,
   recordedAt: string,
+  reportingTimeZone?: string,
 ): string {
-  const day = reportingDay(recordedAt);
+  const day = reportingDay(recordedAt, reportingTimeZone);
   return joinHomePath(
     getCodexEportAccountPartitionPath(home, providerAccountFingerprint),
     "sessions",
@@ -210,17 +264,25 @@ function writeDailySnapshot(
   home: string,
   providerAccountFingerprint: string,
   event: CodexCalculatedUsageRawEvent,
+  storedNewEvent: boolean,
+  reportingTimeZone?: string,
 ): void {
-  const day = reportingDay(event.recordedAt);
-  const rawEvents = readRawEvents(getCodexEportRawEventsPath(home, providerAccountFingerprint));
-  const snapshot = buildDailySnapshot(
-    rawEvents,
-    providerAccountFingerprint,
-    day,
-    event.recordedAt,
-    event.providerAccountIdentity,
-  );
+  const day = reportingDay(event.recordedAt, reportingTimeZone);
   const path = getCodexEportDailySnapshotPath(home, providerAccountFingerprint, day);
+  const existing = readDailySnapshot(path, providerAccountFingerprint, day);
+  if (!storedNewEvent && existing) return;
+
+  const snapshot =
+    storedNewEvent && existing
+      ? addEventToDailySnapshot(existing, event)
+      : buildDailySnapshotFromRawEvents(
+          home,
+          providerAccountFingerprint,
+          day,
+          event.recordedAt,
+          event.providerAccountIdentity,
+          reportingTimeZone,
+        );
   writeJsonFileAtomic(path, snapshot);
 }
 
@@ -242,27 +304,25 @@ function writeProviderAccountIdentity(
   );
 }
 
-function buildDailySnapshot(
-  events: CodexCalculatedUsageRawEvent[],
+function buildDailySnapshotFromRawEvents(
+  home: string,
   providerAccountFingerprint: string,
   day: string,
   updatedAt: string,
   fallbackIdentity?: CodexProviderAccountIdentity,
+  reportingTimeZone?: string,
 ): CodexDailyUsageSnapshot {
-  const totals = emptyTotals();
-  const modelTotals = new Map<string, CodexUsageTotals>();
+  const totals = emptyDailyTotals();
+  const modelTotals = new Map<string, CodexDailyUsageTotals>();
   let providerAccountIdentity = fallbackIdentity;
 
-  for (const event of events) {
-    if (event.provider !== "codex") continue;
-    if (event.providerAccountFingerprint !== providerAccountFingerprint) continue;
-    if (reportingDay(event.recordedAt) !== day) continue;
+  forEachRawEventForDay(home, providerAccountFingerprint, day, reportingTimeZone, (event) => {
     providerAccountIdentity = providerAccountIdentity ?? event.providerAccountIdentity;
-    addTotals(totals, event.normalizedUsage);
-    const model = modelTotals.get(event.bareModelId) ?? emptyTotals();
-    addTotals(model, event.normalizedUsage);
+    addUsageToDailyTotals(totals, event.normalizedUsage);
+    const model = modelTotals.get(event.bareModelId) ?? emptyDailyTotals();
+    addUsageToDailyTotals(model, event.normalizedUsage);
     modelTotals.set(event.bareModelId, model);
-  }
+  });
 
   return {
     dataIdentity: `eport:codex:${providerAccountFingerprint}:daily:${day}`,
@@ -281,15 +341,133 @@ function buildDailySnapshot(
   };
 }
 
-function readRawEvents(path: string): CodexCalculatedUsageRawEvent[] {
-  const events = new Map<string, CodexCalculatedUsageRawEvent>();
-  for (const value of readJsonLines(path)) {
-    const parsed = readRecord(value) as CodexCalculatedUsageRawEvent | null;
-    if (!parsed || parsed.provider !== "codex") continue;
-    if (typeof parsed.id !== "string" || events.has(parsed.id)) continue;
-    events.set(parsed.id, parsed);
+function addEventToDailySnapshot(
+  snapshot: CodexDailyUsageSnapshot,
+  event: CodexCalculatedUsageRawEvent,
+): CodexDailyUsageSnapshot {
+  const models = snapshot.models.map((model) => ({ ...model }));
+  let model = models.find((entry) => entry.bareModelId === event.bareModelId);
+  if (!model) {
+    model = { bareModelId: event.bareModelId, ...emptyTotals() };
+    models.push(model);
   }
-  return [...events.values()];
+  addTotals(model, event.normalizedUsage);
+
+  return {
+    ...snapshot,
+    ...(snapshot.providerAccountIdentity || !event.providerAccountIdentity
+      ? {}
+      : { providerAccountIdentity: event.providerAccountIdentity }),
+    inputTokens: snapshot.inputTokens + event.normalizedUsage.inputTokens,
+    cachedInputTokens: snapshot.cachedInputTokens + event.normalizedUsage.cachedInputTokens,
+    outputTokens: snapshot.outputTokens + event.normalizedUsage.outputTokens,
+    reasoningOutputTokens:
+      snapshot.reasoningOutputTokens + event.normalizedUsage.reasoningOutputTokens,
+    totalTokens: snapshot.totalTokens + event.normalizedUsage.totalTokens,
+    costUSD: null,
+    costSource: "unknown",
+    updatedAt: event.recordedAt,
+    models,
+  };
+}
+
+function readDailySnapshot(
+  path: string,
+  providerAccountFingerprint: string,
+  day: string,
+): CodexDailyUsageSnapshot | null {
+  const record = readRecord(readJsonFile(path));
+  if (!record || record.provider !== "codex") return null;
+  if (record.providerAccountFingerprint !== providerAccountFingerprint) return null;
+  if (record.date !== day) return null;
+
+  const models = Array.isArray(record.models)
+    ? record.models.flatMap((model) => {
+        const item = readRecord(model);
+        if (!item || typeof item.bareModelId !== "string") return [];
+        return [{
+          bareModelId: item.bareModelId,
+          inputTokens: readToken(item.inputTokens) ?? 0,
+          cachedInputTokens: readToken(item.cachedInputTokens) ?? 0,
+          outputTokens: readToken(item.outputTokens) ?? 0,
+          reasoningOutputTokens: readToken(item.reasoningOutputTokens) ?? 0,
+          totalTokens: readToken(item.totalTokens) ?? 0,
+        }];
+      })
+    : [];
+
+  const providerAccountIdentity = readRecord(record.providerAccountIdentity) as
+    | CodexProviderAccountIdentity
+    | null;
+  return {
+    dataIdentity:
+      typeof record.dataIdentity === "string"
+        ? record.dataIdentity
+        : `eport:codex:${providerAccountFingerprint}:daily:${day}`,
+    provider: "codex",
+    providerAccountFingerprint,
+    ...(providerAccountIdentity ? { providerAccountIdentity } : {}),
+    date: day,
+    inputTokens: readToken(record.inputTokens) ?? 0,
+    cachedInputTokens: readToken(record.cachedInputTokens) ?? 0,
+    outputTokens: readToken(record.outputTokens) ?? 0,
+    reasoningOutputTokens: readToken(record.reasoningOutputTokens) ?? 0,
+    totalTokens: readToken(record.totalTokens) ?? 0,
+    costUSD: null,
+    costSource: "unknown",
+    updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : day,
+    models,
+  };
+}
+
+function findRawEvent(
+  home: string,
+  providerAccountFingerprint: string,
+  eventId: string,
+  recordedAt: string,
+): CodexCalculatedUsageRawEvent | null {
+  for (const path of getRawEventCandidatePaths(home, providerAccountFingerprint, recordedAt)) {
+    const found = readCodexRawEvent(
+      findJsonLine(path, (value) => readEventId(value) === eventId),
+    );
+    if (found) return found;
+  }
+  return null;
+}
+
+function forEachRawEventForDay(
+  home: string,
+  providerAccountFingerprint: string,
+  day: string,
+  onEvent: (event: CodexCalculatedUsageRawEvent) => void,
+): void {
+  for (const path of getRawEventCandidatePaths(home, providerAccountFingerprint, day)) {
+    forEachJsonLine(path, (value) => {
+      const event = readCodexRawEvent(value);
+      if (!event) return;
+      if (event.providerAccountFingerprint !== providerAccountFingerprint) return;
+      if (reportingDay(event.recordedAt) !== day) return;
+      onEvent(event);
+    });
+  }
+}
+
+function getRawEventCandidatePaths(
+  home: string,
+  providerAccountFingerprint: string,
+  recordedAt: string,
+): string[] {
+  return [
+    getCodexEportRawEventsPath(home, providerAccountFingerprint, recordedAt),
+    getCodexEportRawEventsPath(home, providerAccountFingerprint),
+  ];
+}
+
+function readCodexRawEvent(value: unknown): CodexCalculatedUsageRawEvent | null {
+  const parsed = readRecord(value) as CodexCalculatedUsageRawEvent | null;
+  if (!parsed || parsed.provider !== "codex") return null;
+  if (typeof parsed.id !== "string") return null;
+  return parsed;
 }
 
 function toCodexCcusageTokens(totals: CodexUsageTotals): Record<string, number> {

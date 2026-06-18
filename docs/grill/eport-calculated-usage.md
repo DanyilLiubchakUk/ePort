@@ -207,14 +207,18 @@ Options:
 **Q6 locked:** A. Use one stable synthetic project folder inside each account
 partition for ePort Cursor traffic:
 `~/.claude/eport-accounts/<fingerprint>/projects/eport-cursor-proxy/...`.
-Keep raw ePort event logs as the place for request/session detail; keep
-ccusage-shaped files optimized for daily/account aggregation.
+Keep day-sharded raw ePort event logs as the place for request/session detail;
+keep ccusage-shaped files optimized for daily/account aggregation. Usage writer
+paths must stream JSONL and increment Daily snapshots so large local histories do
+not become large in-memory arrays.
 
 ## Planned storage shape (draft — grill in progress)
 
-### Raw event (append-only JSONL)
+### Raw event (day-sharded append-only JSONL)
 
-One line per completed upstream response. Immutable; dedupe by event id.
+Path: `eport/raw-events/<YYYY-MM-DD>.jsonl` under the Provider Account
+partition. One line per completed upstream response. Immutable; dedupe by event
+id. Legacy `eport/raw-events.jsonl` files remain readable during migration.
 
 ```json
 {

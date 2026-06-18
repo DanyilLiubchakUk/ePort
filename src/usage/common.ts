@@ -1,10 +1,16 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  appendFileSync,
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
+  readSync,
   readFileSync,
   renameSync,
+  unlinkSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import {
   basename,
@@ -13,6 +19,7 @@ import {
   posix,
   win32,
 } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 
 export type CalculatedUsageProvider = "codex" | "claude";
 
@@ -38,17 +45,83 @@ export function joinHomePath(home: string, ...segments: string[]): string {
 }
 
 export function readJsonLines(path: string): unknown[] {
-  if (!existsSync(path)) return [];
-  return readFileSync(path, "utf8")
-    .split(/\r?\n/)
-    .filter((line) => line.trim().length > 0)
-    .flatMap((line) => {
-      try {
-        return [JSON.parse(line) as unknown];
-      } catch {
-        return [];
+  const rows: unknown[] = [];
+  forEachJsonLine(path, (value) => {
+    rows.push(value);
+  });
+  return rows;
+}
+
+export function readJsonFile(path: string): unknown | null {
+  if (!existsSync(path)) return null;
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+export function forEachJsonLine(
+  path: string,
+  onValue: (value: unknown) => boolean | void,
+): void {
+  if (!existsSync(path)) return;
+
+  const fd = openSync(path, "r");
+  const decoder = new StringDecoder("utf8");
+  const buffer = Buffer.allocUnsafe(64 * 1024);
+  let pending = "";
+  let keepReading = true;
+
+  const emitLine = (line: string): void => {
+    if (!keepReading) return;
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    try {
+      const result = onValue(JSON.parse(trimmed) as unknown);
+      if (result === false) keepReading = false;
+    } catch {
+      // Corrupt JSONL rows are ignored so one bad row cannot block usage writes.
+    }
+  };
+
+  try {
+    while (keepReading) {
+      const bytesRead = readSync(fd, buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      pending += decoder.write(buffer.subarray(0, bytesRead));
+
+      let newlineIndex = pending.indexOf("\n");
+      while (newlineIndex !== -1) {
+        let line = pending.slice(0, newlineIndex);
+        if (line.endsWith("\r")) line = line.slice(0, -1);
+        emitLine(line);
+        pending = pending.slice(newlineIndex + 1);
+        if (!keepReading) break;
+        newlineIndex = pending.indexOf("\n");
       }
-    });
+    }
+
+    pending += decoder.end();
+    if (keepReading && pending.length > 0) emitLine(pending);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+export function findJsonLine(
+  path: string,
+  predicate: (value: unknown) => boolean,
+): unknown | null {
+  let found = false;
+  let result: unknown = null;
+  forEachJsonLine(path, (value) => {
+    if (!predicate(value)) return;
+    found = true;
+    result = value;
+    return false;
+  });
+  return found ? result : null;
 }
 
 export function appendUniqueJsonLine(
@@ -57,9 +130,8 @@ export function appendUniqueJsonLine(
   identity: string,
   readIdentity: (value: unknown) => string | null,
 ): boolean {
-  const rows = readJsonLines(path);
-  if (rows.some((row) => readIdentity(row) === identity)) return false;
-  writeJsonLinesAtomic(path, [...rows, value]);
+  if (findJsonLine(path, (row) => readIdentity(row) === identity)) return false;
+  appendJsonLine(path, value);
   return true;
 }
 
@@ -69,29 +141,108 @@ export function upsertJsonLine(
   identity: string,
   readIdentity: (value: unknown) => string | null,
 ): boolean {
-  const rows = readJsonLines(path);
   let replaced = false;
-  const nextRows = rows.map((row) => {
+  rewriteJsonLinesAtomic(path, (row) => {
     if (readIdentity(row) !== identity) return row;
     replaced = true;
     return value;
+  }, () => {
+    if (!replaced) return value;
+    return null;
   });
-  if (!replaced) nextRows.push(value);
-  writeJsonLinesAtomic(path, nextRows);
   return !replaced;
 }
 
-function writeJsonLinesAtomic(path: string, values: unknown[]): void {
-  const body = values.map((value) => JSON.stringify(value)).join("\n");
-  writeTextAtomic(path, values.length > 0 ? `${body}\n` : "");
+function appendJsonLine(path: string, value: unknown): void {
+  const api = pathApiFor(path);
+  mkdirSync(api.dirname(path), { recursive: true });
+  appendFileSync(path, `${JSON.stringify(value)}\n`, "utf8");
+}
+
+function rewriteJsonLinesAtomic(
+  path: string,
+  mapValue: (value: unknown) => unknown | null,
+  finalValue: () => unknown | null,
+): void {
+  const api = pathApiFor(path);
+  const dir = api.dirname(path);
+  mkdirSync(dir, { recursive: true });
+  const tmp = atomicTempPath(path);
+  const fd = openSync(tmp, "w");
+  let closed = false;
+
+  const closeTmp = (): void => {
+    if (closed) return;
+    closeSync(fd);
+    closed = true;
+  };
+
+  try {
+    forEachJsonLine(path, (row) => {
+      const next = mapValue(row);
+      if (next !== null) writeSync(fd, `${JSON.stringify(next)}\n`);
+    });
+    const final = finalValue();
+    if (final !== null) writeSync(fd, `${JSON.stringify(final)}\n`);
+    closeTmp();
+    renameSync(tmp, path);
+  } catch (error) {
+    closeTmp();
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // Best effort cleanup; the original file is still intact.
+    }
+    throw error;
+  }
 }
 
 export function writeJsonFileAtomic(path: string, value: unknown): void {
   writeTextAtomic(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-export function reportingDay(recordedAt: string): string {
-  return recordedAt.slice(0, 10);
+const reportingDayFormatters = new Map<string, Intl.DateTimeFormat>();
+
+export function reportingDay(recordedAt: string, timeZone?: string): string {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(recordedAt)) {
+    return recordedAt;
+  }
+
+  const parsed = Date.parse(recordedAt);
+  if (!Number.isFinite(parsed)) {
+    return recordedAt.slice(0, 10);
+  }
+
+  try {
+    const formatter = getReportingDayFormatter(timeZone ?? localReportingTimeZone());
+    const parts = formatter.formatToParts(new Date(parsed));
+    const year = parts.find((part) => part.type === "year")?.value;
+    const month = parts.find((part) => part.type === "month")?.value;
+    const day = parts.find((part) => part.type === "day")?.value;
+    if (year && month && day) return `${year}-${month}-${day}`;
+  } catch {
+    // Fall back to the previous UTC behavior if Intl rejects a timezone.
+  }
+
+  return new Date(parsed).toISOString().slice(0, 10);
+}
+
+function localReportingTimeZone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+}
+
+function getReportingDayFormatter(timeZone: string): Intl.DateTimeFormat {
+  const existing = reportingDayFormatters.get(timeZone);
+  if (existing) return existing;
+
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  reportingDayFormatters.set(timeZone, formatter);
+  return formatter;
 }
 
 export function normalizeRecordedAt(value: string | number | null | undefined): string {
@@ -128,15 +279,19 @@ export function safePathSegment(value: string): string {
 }
 
 function writeTextAtomic(path: string, value: string): void {
+  const tmp = atomicTempPath(path);
+  writeFileSync(tmp, value, "utf8");
+  renameSync(tmp, path);
+}
+
+function atomicTempPath(path: string): string {
   const api = pathApiFor(path);
   const dir = api.dirname(path);
   mkdirSync(dir, { recursive: true });
-  const tmp = api.join(
+  return api.join(
     dir,
     `.${api.basename(path)}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`,
   );
-  writeFileSync(tmp, value, "utf8");
-  renameSync(tmp, path);
 }
 
 function pathApiFor(value: string): Pick<typeof win32, "basename" | "dirname" | "join"> {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, posix, win32 } from "node:path";
+import { dirname, join, posix, win32 } from "node:path";
 
 import {
   fallbackProviderAccountFingerprintFor,
@@ -83,7 +83,7 @@ describe("Codex calculated usage", () => {
         },
       });
 
-      const rawEvents = readFileSync(getCodexEportRawEventsPath(home, fingerprint), "utf8")
+      const rawEvents = readFileSync(getCodexEportRawEventsPath(home, fingerprint, "2026-06-17"), "utf8")
         .trim()
         .split("\n")
         .map((line) => JSON.parse(line) as Record<string, unknown>);
@@ -232,7 +232,7 @@ describe("Codex calculated usage", () => {
         usage: { input_tokens: 5, output_tokens: 1, total_tokens: 6 },
       });
 
-      expect(existsSync(getCodexEportRawEventsPath(home, fallback))).toBe(true);
+      expect(existsSync(getCodexEportRawEventsPath(home, fallback, "2026-06-17"))).toBe(true);
       expect(readJsonFile(getCodexEportDailySnapshotPath(home, fallback, "2026-06-17"))).toMatchObject({
         dataIdentity: `eport:codex:${fallback}:daily:2026-06-17`,
         providerAccountFingerprint: fallback,
@@ -267,7 +267,7 @@ describe("Codex calculated usage", () => {
         usage: { input_tokens: 1000, output_tokens: 2000, total_tokens: 3000 },
       });
 
-      expect(readJsonLines(getCodexEportRawEventsPath(home, fingerprint))).toHaveLength(1);
+      expect(readJsonLines(getCodexEportRawEventsPath(home, fingerprint, "2026-06-17"))).toHaveLength(1);
       expect(
         readJsonLines(
           getCodexEportSessionFilePath(home, fingerprint, "2026-06-17T13:00:00.000Z"),
@@ -278,6 +278,64 @@ describe("Codex calculated usage", () => {
         outputTokens: 2,
         totalTokens: 12,
       });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("uses legacy raw events as canonical data during shard migration", () => {
+    const home = mkdtempSync(join(tmpdir(), "eport-codex-legacy-raw-"));
+    const fingerprint = providerAccountFingerprintFor("codex", "acct-legacy");
+    const legacyRawEventsPath = getCodexEportRawEventsPath(home, fingerprint);
+    const legacyEvent = {
+      id: `eport:codex:${fingerprint}:resp_legacy`,
+      recordedAt: "2026-06-17T20:00:00.000Z",
+      provider: "codex",
+      providerAccountFingerprint: fingerprint,
+      responseId: "resp_legacy",
+      clientModel: "gpt-5.5",
+      bareModelId: "gpt-5.5",
+      effort: null,
+      fastTier: false,
+      finish: "stop",
+      usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
+      normalizedUsage: {
+        inputTokens: 10,
+        cachedInputTokens: 0,
+        outputTokens: 2,
+        reasoningOutputTokens: 0,
+        totalTokens: 12,
+      },
+    };
+
+    try {
+      mkdirSync(dirname(legacyRawEventsPath), { recursive: true });
+      writeFileSync(legacyRawEventsPath, `${JSON.stringify(legacyEvent)}\n`, "utf8");
+
+      recordCodexCalculatedUsage({
+        home,
+        providerAccountFingerprint: fingerprint,
+        responseId: "resp_legacy",
+        clientModel: "gpt-5.5",
+        bareModelId: "gpt-5.5",
+        effort: null,
+        fastTier: false,
+        finish: "stop",
+        recordedAt: "2026-06-17T20:05:00.000Z",
+        usage: { input_tokens: 1000, output_tokens: 2000, total_tokens: 3000 },
+      });
+
+      expect(existsSync(getCodexEportRawEventsPath(home, fingerprint, "2026-06-17"))).toBe(false);
+      expect(readJsonFile(getCodexEportDailySnapshotPath(home, fingerprint, "2026-06-17"))).toMatchObject({
+        inputTokens: 10,
+        outputTokens: 2,
+        totalTokens: 12,
+      });
+      expect(
+        readJsonLines(
+          getCodexEportSessionFilePath(home, fingerprint, "2026-06-17T20:00:00.000Z"),
+        ),
+      ).toHaveLength(1);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
