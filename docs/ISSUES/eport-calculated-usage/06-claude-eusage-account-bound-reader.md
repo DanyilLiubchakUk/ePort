@@ -8,15 +8,23 @@ Teach the Claude eUsage plugin path to discover Claude ePort account partitions,
 
 ## Acceptance criteria
 
-- [ ] Claude eUsage discovery finds multiple Claude ePort account partitions under the native Claude home
-- [ ] The Claude plugin queries ccusage once per discovered ePort account partition
-- [ ] Each Claude ePort partition is queried through the stable synthetic ePort project folder
-- [ ] Each Claude ePort partition emits one account-bound child output with exactly one Provider Account detection
-- [ ] Claude account-bound source facts include stable usage data identity per Provider Account and reporting day
-- [ ] Native Claude Code usage continues to load without being attributed to any ePort queue account
-- [ ] A fixture with two Claude ePort partitions produces two different Claude account-bound token totals
-- [ ] Ambiguous or unreadable Claude partitions surface as fallback or explicit error state instead of merged totals
-- [ ] Claude plugin tests cover empty partitions, one partition, multiple partitions, and native-only usage
+- [x] Claude eUsage discovery finds multiple Claude ePort account partitions under the native Claude home
+- [x] The Claude plugin queries ccusage once per discovered ePort account partition
+- [x] Each Claude ePort partition is queried through the stable synthetic ePort project folder
+- [x] Each Claude ePort partition emits one account-bound child output with exactly one Provider Account detection
+- [x] Claude account-bound source facts include stable usage data identity per Provider Account and reporting day
+- [x] Native Claude Code usage continues to load without being attributed to any ePort queue account
+- [x] A fixture with two Claude ePort partitions produces two different Claude account-bound token totals
+- [x] Ambiguous or unreadable Claude partitions surface as fallback or explicit error state instead of merged totals
+- [x] Claude plugin tests cover empty partitions, one partition, multiple partitions, and native-only usage
+
+## Verification notes
+
+- OpenUsage Claude plugin now discovers `eport-accounts/<providerAccountFingerprint>` directories under the native Claude home and queries each partition as a Claude home.
+- Claude ePort partition fixtures use the stable synthetic project folder `projects/eport-cursor-proxy`.
+- Native Claude Code usage remains provider-level, while each discovered ePort partition emits a `providerAccountOutputs` child with one high-confidence Claude Provider Account detection.
+- Account-bound Claude source facts use `eport:claude:<providerAccountFingerprint>:daily:<YYYY-MM-DD>` as stable `dataIdentity`.
+- Claude plugin fixtures cover native-only usage, one ePort partition, multiple partitions with distinct totals, empty partitions, unreadable partitions surfaced as account-bound status output, and `CLAUDE_CONFIG_DIR` partition discovery.
 
 ## Blocked by
 
