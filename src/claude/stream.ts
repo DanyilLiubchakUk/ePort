@@ -2,7 +2,15 @@ interface StreamTranslationOptions {
   model: string;
   signal?: AbortSignal;
   onFinish?: (finish: "stop" | "tool_calls" | string) => void;
+  onUsage?: (capture: ClaudeCompletedUsageCapture) => void;
   onUnhandledEvent?: (eventType: string) => void;
+}
+
+export interface ClaudeCompletedUsageCapture {
+  responseId: string | null;
+  message: Record<string, unknown> | null;
+  usage: Record<string, unknown>;
+  finish: string;
 }
 
 const HANDLED_ANTHROPIC_EVENTS = new Set([
@@ -18,6 +26,12 @@ interface ToolStreamState {
   byIndex: Map<number, { id: string; name: string; args: string }>;
   hadToolCall: boolean;
   stopReason: string | null;
+}
+
+interface ClaudeUsageStreamState {
+  responseId: string | null;
+  message: Record<string, unknown> | null;
+  usage: Record<string, unknown> | null;
 }
 
 function indexOfDoubleNewline(buffer: string): number {
@@ -66,6 +80,11 @@ export async function translateAnthropicSseToResponses(
         hadToolCall: false,
         stopReason: null,
       };
+      const usage: ClaudeUsageStreamState = {
+        responseId: null,
+        message: null,
+        usage: null,
+      };
 
       try {
         while (true) {
@@ -91,7 +110,14 @@ export async function translateAnthropicSseToResponses(
               options.onUnhandledEvent?.(event);
             }
 
-            const formatted = formatResponsesEvent(event, parsed, messageId, tools, options);
+            const formatted = formatResponsesEvent(
+              event,
+              parsed,
+              messageId,
+              tools,
+              usage,
+              options,
+            );
             if (formatted) {
               if (formatted.updateId) messageId = formatted.updateId;
               controller.enqueue(encoder.encode(formatted.chunk));
@@ -130,8 +156,11 @@ function formatResponsesEvent(
   data: Record<string, unknown>,
   messageId: string,
   tools: ToolStreamState,
+  usage: ClaudeUsageStreamState,
   options: StreamTranslationOptions,
 ): { chunk: string; updateId?: string } | null {
+  updateClaudeUsageState(event, data, usage);
+
   if (event === "message_start") {
     const message = data.message as Record<string, unknown> | undefined;
     const id = typeof message?.id === "string" ? message.id : messageId;
@@ -220,7 +249,9 @@ function formatResponsesEvent(
   }
 
   if (event === "message_stop") {
-    options.onFinish?.(toOpenAiFinishReason(toAnthropicStopReason(tools)));
+    const finish = toOpenAiFinishReason(toAnthropicStopReason(tools));
+    emitClaudeUsage(usage, finish, options);
+    options.onFinish?.(finish);
     return {
       chunk: `data: ${JSON.stringify({
         type: "response.completed",
@@ -252,6 +283,11 @@ export async function translateAnthropicSseToChat(
     tools: new Map<number, { id: string; name: string; args: string }>(),
     hadToolCall: false,
     stopReason: null as string | null,
+    usage: {
+      responseId: null,
+      message: null,
+      usage: null,
+    } satisfies ClaudeUsageStreamState,
   };
 
   const sseStream = new ReadableStream<Uint8Array>({
@@ -334,9 +370,12 @@ function formatChatEvent(
     tools: Map<number, { id: string; name: string; args: string }>;
     hadToolCall: boolean;
     stopReason: string | null;
+    usage: ClaudeUsageStreamState;
   },
   options: StreamTranslationOptions,
 ): string | null {
+  updateClaudeUsageState(event, data, state.usage);
+
   if (event === "content_block_start") {
     const index = typeof data.index === "number" ? data.index : null;
     const block = data.content_block as Record<string, unknown> | undefined;
@@ -395,6 +434,7 @@ function formatChatEvent(
 
   if (event === "message_stop") {
     const finish = toOpenAiFinishReason(state.stopReason ?? toAnthropicStopReason(state));
+    emitClaudeUsage(state.usage, finish, options);
     options.onFinish?.(finish);
     return (
       formatAssistantRoleChunk(state) +
@@ -409,6 +449,58 @@ function toOpenAiFinishReason(stopReason: string): string {
   if (stopReason === "end_turn") return "stop";
   if (stopReason === "tool_use") return "tool_calls";
   return stopReason;
+}
+
+function updateClaudeUsageState(
+  event: string,
+  data: Record<string, unknown>,
+  state: ClaudeUsageStreamState,
+): void {
+  if (event === "message_start") {
+    const message = readRecord(data.message);
+    if (message) {
+      state.message = message;
+      if (typeof message.id === "string") {
+        state.responseId = message.id;
+      }
+      const usage = readRecord(message.usage);
+      if (usage) {
+        state.usage = usage;
+      }
+    }
+    return;
+  }
+
+  if (event === "message_delta") {
+    const usage = readRecord(data.usage);
+    if (usage) {
+      state.usage = usage;
+    }
+  }
+}
+
+function emitClaudeUsage(
+  state: ClaudeUsageStreamState,
+  finish: string,
+  options: StreamTranslationOptions,
+): void {
+  if (!state.usage) return;
+
+  try {
+    options.onUsage?.({
+      responseId: state.responseId,
+      message: state.message,
+      usage: state.usage,
+      finish,
+    });
+  } catch {
+    // Observer failures must not corrupt the client stream.
+  }
+}
+
+function readRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
 }
 
 function toAnthropicStopReason(state: { stopReason: string | null; hadToolCall: boolean }): string {

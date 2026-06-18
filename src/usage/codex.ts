@@ -1,6 +1,4 @@
-import { createHash } from "node:crypto";
 import {
-  appendFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -8,6 +6,17 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+
+import {
+  appendJsonLine,
+  normalizeRecordedAt,
+  readRecord,
+  readToken,
+  reportingDay,
+  safePathSegment,
+} from "./common.ts";
+
+export { providerAccountFingerprintFor, reportingDay } from "./common.ts";
 
 export type CodexUsageFinish = "stop" | "tool_calls";
 
@@ -59,17 +68,6 @@ export interface CodexDailyUsageSnapshot extends CodexUsageTotals {
 }
 
 export type CodexUsageRecorder = (input: RecordCodexCalculatedUsageInput) => void;
-
-export function providerAccountFingerprintFor(
-  provider: "codex" | "claude",
-  identityValue: string,
-): string {
-  const identity = identityValue.trim() || "unknown";
-  const digest = createHash("sha256")
-    .update(["eport-provider-account-fingerprint:v1", provider, identity].join("\0"))
-    .digest("hex");
-  return `fp_${digest}`;
-}
 
 export function recordCodexCalculatedUsage(
   input: RecordCodexCalculatedUsageInput,
@@ -197,10 +195,6 @@ export function getCodexEportSessionFilePath(
   );
 }
 
-export function reportingDay(recordedAt: string): string {
-  return recordedAt.slice(0, 10);
-}
-
 function writeDailySnapshot(
   home: string,
   providerAccountFingerprint: string,
@@ -267,11 +261,6 @@ function readRawEvents(path: string): CodexCalculatedUsageRawEvent[] {
     });
 }
 
-function appendJsonLine(path: string, value: unknown): void {
-  mkdirSync(dirname(path), { recursive: true });
-  appendFileSync(path, `${JSON.stringify(value)}\n`, "utf8");
-}
-
 function toCodexCcusageTokens(totals: CodexUsageTotals): Record<string, number> {
   return {
     input_tokens: totals.inputTokens,
@@ -309,37 +298,4 @@ function codexRawEventId(
     return `eport:codex:${providerAccountFingerprint}:${responseId}`;
   }
   return `eport:codex:${providerAccountFingerprint}:${recordedAt}:${crypto.randomUUID()}`;
-}
-
-function normalizeRecordedAt(value: string | number | null | undefined): string {
-  if (typeof value === "string") {
-    const parsed = Date.parse(value);
-    if (Number.isFinite(parsed)) return new Date(parsed).toISOString();
-  }
-  if (typeof value === "number" && Number.isFinite(value)) {
-    const millis = value > 10_000_000_000 ? value : value * 1000;
-    return new Date(millis).toISOString();
-  }
-  return new Date().toISOString();
-}
-
-function readRecord(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  return value as Record<string, unknown>;
-}
-
-function readToken(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
-    return Math.floor(value);
-  }
-  if (typeof value === "string") {
-    const parsed = Number.parseInt(value.trim(), 10);
-    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
-  }
-  return null;
-}
-
-function safePathSegment(value: string): string {
-  const safe = value.replace(/[^a-zA-Z0-9._-]/g, "_");
-  return safe || "unknown";
 }

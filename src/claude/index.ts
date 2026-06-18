@@ -2,6 +2,7 @@ export { fetchClaudeModels, type ClaudeModelRecord, ANTHROPIC_MODELS_URL } from 
 export { defaultMaxTokens, mapEffortToAnthropicThinking } from "./effort.ts";
 export { normalizeEdgeBody, type NormalizedClaudeRequest } from "./normalize.ts";
 export {
+  type ClaudeCompletedUsageCapture,
   translateAnthropicSseToChat,
   translateAnthropicSseToResponses,
 } from "./stream.ts";

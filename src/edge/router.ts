@@ -2,6 +2,7 @@ import { AuthManager } from "../auth/manager.ts";
 import {
   ClaudeUpstreamClient,
   ClaudeUpstreamError,
+  type ClaudeCompletedUsageCapture,
   translateAnthropicSseToChat,
   translateAnthropicSseToResponses,
 } from "../claude/index.ts";
@@ -10,10 +11,14 @@ import type { ConfigProfile, SessionFlags, TunnelMode } from "../config/types.ts
 import { ModelResolver } from "../resolver/index.ts";
 import { ModelRoutingError } from "../resolver/types.ts";
 import {
-  providerAccountFingerprintFor,
   recordCodexCalculatedUsage,
   type CodexUsageRecorder,
 } from "../usage/codex.ts";
+import {
+  recordClaudeCalculatedUsage,
+  type ClaudeUsageRecorder,
+} from "../usage/claude.ts";
+import { providerAccountFingerprintFor } from "../usage/common.ts";
 import {
   authorizeProxyRequest,
   unauthorizedResponse,
@@ -41,6 +46,7 @@ export interface EdgeRouterDeps {
   proxyApiKey: string;
   verbose?: boolean;
   codexUsageRecorder?: CodexUsageRecorder;
+  claudeUsageRecorder?: ClaudeUsageRecorder;
 }
 
 export function createEdgeHandler(deps: EdgeRouterDeps) {
@@ -413,6 +419,7 @@ async function handleClaudeRoute(
   if (deps.verbose) {
     console.log(`[claude-upstream-body] ${JSON.stringify(prepared)}`);
   }
+  const onUsage = createClaudeUsageCaptureHandler(deps, credentials, route, model);
 
   try {
     const upstream = await deps.claudeUpstream.stream({
@@ -427,6 +434,7 @@ async function handleClaudeRoute(
         await translateAnthropicSseToResponses(upstream, {
           model,
           signal: abort.signal,
+          onUsage,
           onFinish: (finish) =>
             logInferenceSuccess(req, url.pathname, edgeShape, route, model, started, finish),
           onUnhandledEvent: (eventType) =>
@@ -439,6 +447,7 @@ async function handleClaudeRoute(
       await translateAnthropicSseToChat(upstream, {
         model,
         signal: abort.signal,
+        onUsage,
         onFinish: (finish) =>
           logInferenceSuccess(req, url.pathname, edgeShape, route, model, started, finish),
         onUnhandledEvent: (eventType) =>
@@ -477,6 +486,51 @@ async function handleClaudeRoute(
       provider: "claude",
     });
   }
+}
+
+function createClaudeUsageCaptureHandler(
+  deps: EdgeRouterDeps,
+  credentials: Awaited<ReturnType<AuthManager["getClaudeCredentials"]>>,
+  route: ReturnType<ModelResolver["resolve"]>,
+  clientModel: string,
+): (capture: ClaudeCompletedUsageCapture) => void {
+  const activeEntry = deps.auth.accounts.getActiveEntry("claude");
+  const accountIdentity =
+    activeEntry?.accountKey || activeEntry?.id || credentials.storePath || "unknown";
+  const providerAccountFingerprint = providerAccountFingerprintFor(
+    "claude",
+    accountIdentity,
+  );
+  const recorder = deps.claudeUsageRecorder ?? recordClaudeCalculatedUsage;
+
+  return (capture) => {
+    try {
+      recorder({
+        home: deps.home,
+        providerAccountFingerprint,
+        responseId: capture.responseId,
+        clientModel,
+        bareModelId: route.bareModelId,
+        effort: route.effort,
+        finish: capture.finish,
+        usage: capture.usage,
+        recordedAt: readClaudeMessageTimestamp(capture.message),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(
+        `[eport-usage] failed to record claude usage response=${capture.responseId ?? "-"} account=${providerAccountFingerprint}: ${message}`,
+      );
+    }
+  };
+}
+
+function readClaudeMessageTimestamp(message: Record<string, unknown> | null): string | number | null {
+  const createdAt = message?.created_at;
+  if (typeof createdAt === "string" || typeof createdAt === "number") return createdAt;
+  const created = message?.created;
+  if (typeof created === "string" || typeof created === "number") return created;
+  return null;
 }
 
 function handleUpstreamError(

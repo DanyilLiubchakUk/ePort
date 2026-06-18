@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import {
   ClaudeUpstreamClient,
+  type ClaudeCompletedUsageCapture,
   anthropicRequestContainsXhigh,
   mapEffortToAnthropicThinking,
   normalizeEdgeBody,
@@ -216,6 +217,136 @@ describe("claude translator — request normalization", () => {
 });
 
 describe("claude translator — stream egress", () => {
+  it("captures message_start usage as a responses fallback", async () => {
+    const captures: ClaudeCompletedUsageCapture[] = [];
+    const upstream = anthropicSse([
+      {
+        event: "message_start",
+        data: { message: { id: "msg_fallback", usage: { input_tokens: 3 } } },
+      },
+      { event: "message_stop", data: {} },
+    ]);
+
+    const response = await translateAnthropicSseToResponses(upstream, {
+      model: "opus-4.8",
+      onUsage: (capture) => captures.push(capture),
+    });
+    await response.text();
+
+    expect(captures).toHaveLength(1);
+    expect(captures[0]).toMatchObject({
+      responseId: "msg_fallback",
+      usage: { input_tokens: 3 },
+    });
+  });
+
+  it("captures message_start usage as a chat fallback", async () => {
+    const captures: ClaudeCompletedUsageCapture[] = [];
+    const upstream = anthropicSse([
+      {
+        event: "message_start",
+        data: { message: { id: "msg_chat_fallback", usage: { input_tokens: 4 } } },
+      },
+      { event: "message_stop", data: {} },
+    ]);
+
+    const response = await translateAnthropicSseToChat(upstream, {
+      model: "opus-4.8",
+      onUsage: (capture) => captures.push(capture),
+    });
+    await response.text();
+
+    expect(captures).toHaveLength(1);
+    expect(captures[0]).toMatchObject({
+      responseId: "msg_chat_fallback",
+      usage: { input_tokens: 4 },
+    });
+  });
+
+  it("prefers cumulative message_delta usage on responses streams", async () => {
+    const captures: ClaudeCompletedUsageCapture[] = [];
+    const upstream = anthropicSse([
+      {
+        event: "message_start",
+        data: { message: { id: "msg_delta", usage: { input_tokens: 1 } } },
+      },
+      {
+        event: "message_delta",
+        data: {
+          delta: { stop_reason: "end_turn" },
+          usage: {
+            input_tokens: 10,
+            cache_creation_input_tokens: 2,
+            cache_read_input_tokens: 3,
+            output_tokens: 4,
+            server_tool_use: { web_search_requests: 1 },
+          },
+        },
+      },
+      { event: "message_stop", data: {} },
+    ]);
+
+    const response = await translateAnthropicSseToResponses(upstream, {
+      model: "opus-4.8",
+      onUsage: (capture) => captures.push(capture),
+    });
+    await response.text();
+
+    expect(captures).toHaveLength(1);
+    expect(captures[0]).toEqual({
+      responseId: "msg_delta",
+      message: {
+        id: "msg_delta",
+        usage: { input_tokens: 1 },
+      },
+      usage: {
+        input_tokens: 10,
+        cache_creation_input_tokens: 2,
+        cache_read_input_tokens: 3,
+        output_tokens: 4,
+        server_tool_use: { web_search_requests: 1 },
+      },
+      finish: "stop",
+    });
+  });
+
+  it("prefers cumulative message_delta usage on chat streams", async () => {
+    const captures: ClaudeCompletedUsageCapture[] = [];
+    const upstream = anthropicSse([
+      {
+        event: "message_start",
+        data: { message: { id: "msg_chat_delta", usage: { input_tokens: 1 } } },
+      },
+      {
+        event: "content_block_start",
+        data: {
+          index: 0,
+          content_block: { type: "tool_use", id: "toolu_weather", name: "get_weather" },
+        },
+      },
+      {
+        event: "message_delta",
+        data: {
+          delta: { stop_reason: "tool_use" },
+          usage: { input_tokens: 20, output_tokens: 8 },
+        },
+      },
+      { event: "message_stop", data: {} },
+    ]);
+
+    const response = await translateAnthropicSseToChat(upstream, {
+      model: "opus-4.8",
+      onUsage: (capture) => captures.push(capture),
+    });
+    await response.text();
+
+    expect(captures).toHaveLength(1);
+    expect(captures[0]).toMatchObject({
+      usage: { input_tokens: 20, output_tokens: 8 },
+      finish: "tool_calls",
+    });
+  });
+
   it("translates Anthropic SSE to responses events", async () => {
     const upstream = anthropicSse([
       {

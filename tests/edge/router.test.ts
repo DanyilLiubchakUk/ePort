@@ -7,14 +7,20 @@ import { ClaudeUpstreamClient, type FetchFn as ClaudeFetchFn } from "../../src/c
 import { CodexUpstreamClient, type FetchFn } from "../../src/codex/index.ts";
 import { AuthManager } from "../../src/auth/manager.ts";
 import { getAccountAuthPath } from "../../src/auth/accounts-paths.ts";
+import { writeClaudeAuthFile } from "../../src/auth/claude-file.ts";
 import { writeCodexAuthFile } from "../../src/auth/codex-file.ts";
 import { emptyConfigProfile } from "../../src/config/types.ts";
 import { startEdgeServer } from "../../src/edge/index.ts";
 import {
+  getClaudeEportDailySnapshotPath,
+  getClaudeEportRawEventsPath,
+  getClaudeEportSessionFilePath,
+} from "../../src/usage/claude.ts";
+import { providerAccountFingerprintFor } from "../../src/usage/common.ts";
+import {
   getCodexEportDailySnapshotPath,
   getCodexEportRawEventsPath,
   getCodexEportSessionFilePath,
-  providerAccountFingerprintFor,
   type CodexUsageRecorder,
 } from "../../src/usage/codex.ts";
 import {
@@ -76,10 +82,13 @@ describe("edge router", () => {
     codexFetchFn?: FetchFn;
     claudeFetchFn?: ClaudeFetchFn;
     codexUsageRecorder?: CodexUsageRecorder;
+    configureAuth?: (auth: AuthManager, home: string) => void;
   } = {}) {
     home = mkdtempSync(`${tmpdir()}/eport-edge-`);
     writeEportAuth(home, makeCodexAuthFile(secondsFromNow(3600)));
     writeEportClaudeAuth(home, makeClaudeAuthFile(msFromNow(3_600_000)));
+    const auth = new AuthManager(home);
+    options.configureAuth?.(auth, home);
 
     const codexUpstream = new CodexUpstreamClient({
       installationId: "edge-install",
@@ -123,6 +132,7 @@ describe("edge router", () => {
       proxyApiKey: profile.proxyApiKey,
       codexUpstream,
       claudeUpstream,
+      auth,
       verbose: options.verbose,
       codexUsageRecorder: options.codexUsageRecorder,
     });
@@ -547,6 +557,182 @@ describe("edge router", () => {
     expect(claudeCalls).toBe(1);
     const text = await response.text();
     expect(text).toContain("chat.completion.chunk");
+  });
+
+  it("records Claude Responses usage under the queued account partition", async () => {
+    const completedAt = "2026-06-17T16:00:00.000Z";
+    const accountKey = "claude-work-account";
+    const { baseUrl } = startTestServer({
+      configureAuth: (auth, testHome) => {
+        const id = "claude-a1";
+        const authPath = getAccountAuthPath(testHome, "claude", id);
+        writeClaudeAuthFile(authPath, makeClaudeAuthFile(msFromNow(3_600_000)));
+        auth.accounts.addAccount("claude", { id, authPath, accountKey });
+      },
+      claudeFetchFn: async () =>
+        anthropicSseResponse([
+          {
+            event: "message_start",
+            data: {
+              message: {
+                id: "msg_usage_response",
+                created_at: completedAt,
+                usage: { input_tokens: 1 },
+              },
+            },
+          },
+          {
+            event: "content_block_delta",
+            data: { delta: { type: "text_delta", text: "usage" } },
+          },
+          {
+            event: "message_delta",
+            data: {
+              delta: { stop_reason: "end_turn" },
+              usage: {
+                input_tokens: 100,
+                cache_creation_input_tokens: 20,
+                cache_read_input_tokens: 30,
+                output_tokens: 40,
+                server_tool_use: { web_search_requests: 1 },
+              },
+            },
+          },
+          { event: "message_stop", data: {} },
+        ]),
+    });
+
+    const response = await fetch(`${baseUrl}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "opus-4.8max",
+        input: [{ role: "user", content: "hello" }],
+        stream: true,
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    await response.text();
+
+    const fingerprint = providerAccountFingerprintFor("claude", accountKey);
+    const rawEvents = readFileSync(getClaudeEportRawEventsPath(home, fingerprint), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(rawEvents).toHaveLength(1);
+    expect(rawEvents[0]).toMatchObject({
+      provider: "claude",
+      providerAccountFingerprint: fingerprint,
+      responseId: "msg_usage_response",
+      clientModel: "opus-4.8max",
+      bareModelId: "opus-4.8",
+      effort: "max",
+      finish: "stop",
+      usage: {
+        server_tool_use: { web_search_requests: 1 },
+      },
+      normalizedUsage: {
+        inputTokens: 100,
+        cacheCreationInputTokens: 20,
+        cacheReadInputTokens: 30,
+        outputTokens: 40,
+        totalTokens: 190,
+        serverToolUse: { web_search_requests: 1 },
+      },
+    });
+
+    const snapshot = JSON.parse(
+      readFileSync(getClaudeEportDailySnapshotPath(home, fingerprint, "2026-06-17"), "utf8"),
+    ) as Record<string, unknown>;
+    expect(snapshot).toMatchObject({
+      dataIdentity: `eport:claude:${fingerprint}:daily:2026-06-17`,
+      provider: "claude",
+      inputTokens: 100,
+      cacheCreationInputTokens: 20,
+      cacheReadInputTokens: 30,
+      outputTokens: 40,
+      totalTokens: 190,
+      serverToolUse: { web_search_requests: 1 },
+    });
+
+    const sessionPath = getClaudeEportSessionFilePath(home, fingerprint, completedAt);
+    expect(existsSync(sessionPath)).toBe(true);
+    expect(sessionPath).toContain(join("projects", "eport-cursor-proxy", "2026-06-17.jsonl"));
+    expect(existsSync(join(home, ".claude", "projects"))).toBe(false);
+  });
+
+  it("records Claude chat translation usage once for tool-call completions", async () => {
+    const accountKey = "claude-chat-account";
+    const { baseUrl } = startTestServer({
+      configureAuth: (auth, testHome) => {
+        const id = "claude-a2";
+        const authPath = getAccountAuthPath(testHome, "claude", id);
+        writeClaudeAuthFile(authPath, makeClaudeAuthFile(msFromNow(3_600_000)));
+        auth.accounts.addAccount("claude", { id, authPath, accountKey });
+      },
+      claudeFetchFn: async () =>
+        anthropicSseResponse([
+          {
+            event: "message_start",
+            data: {
+              message: {
+                id: "msg_usage_chat",
+                usage: {
+                  input_tokens: 50,
+                  cache_creation_input_tokens: 5,
+                  cache_read_input_tokens: 10,
+                  output_tokens: 15,
+                },
+              },
+            },
+          },
+          {
+            event: "content_block_start",
+            data: {
+              index: 0,
+              content_block: { type: "tool_use", id: "toolu_weather", name: "get_weather" },
+            },
+          },
+          { event: "message_delta", data: { delta: { stop_reason: "tool_use" } } },
+          { event: "message_stop", data: {} },
+        ]),
+    });
+
+    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "opus-4.8high",
+        messages: [{ role: "user", content: "use tool" }],
+        stream: true,
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    expect(text).toContain('"finish_reason":"tool_calls"');
+
+    const fingerprint = providerAccountFingerprintFor("claude", accountKey);
+    const rawEvents = readFileSync(getClaudeEportRawEventsPath(home, fingerprint), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(rawEvents).toHaveLength(1);
+    expect(rawEvents[0]).toMatchObject({
+      responseId: "msg_usage_chat",
+      clientModel: "opus-4.8high",
+      bareModelId: "opus-4.8",
+      effort: "high",
+      finish: "tool_calls",
+      normalizedUsage: {
+        inputTokens: 50,
+        cacheCreationInputTokens: 5,
+        cacheReadInputTokens: 10,
+        outputTokens: 15,
+        totalTokens: 80,
+      },
+    });
   });
 
   it("routes Claude chat tool loop with Anthropic request and chat tool_calls", async () => {
