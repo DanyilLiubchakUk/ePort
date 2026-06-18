@@ -137,7 +137,7 @@ describe("edge router", () => {
       codexUsageRecorder: options.codexUsageRecorder,
     });
 
-    return { baseUrl: `http://${server.host}:${server.port}` };
+    return { baseUrl: `http://${server.host}:${server.port}`, auth };
   }
 
   it("GET /health succeeds without upstream validation", async () => {
@@ -377,6 +377,84 @@ describe("edge router", () => {
         totalTokens: 230,
       },
     });
+  });
+
+  it("records Codex usage under the account active after a manual switch", async () => {
+    let upstreamCalls = 0;
+    const { baseUrl, auth } = startTestServer({
+      configureAuth: (testAuth, testHome) => {
+        for (const [id, key] of [
+          ["a1", "acct-manual-1"],
+          ["a2", "acct-manual-2"],
+        ] as const) {
+          const authPath = getAccountAuthPath(testHome, "codex", id);
+          const file = makeCodexAuthFile(secondsFromNow(3600));
+          file.tokens.account_id = key;
+          file.tokens.access_token = makeTestJwt(secondsFromNow(3600), key);
+          file.tokens.id_token = file.tokens.access_token;
+          writeCodexAuthFile(authPath, file);
+          testAuth.accounts.addAccount("codex", { id, authPath, accountKey: key });
+        }
+      },
+      codexFetchFn: async () => {
+        upstreamCalls += 1;
+        return codexSseResponse([
+          { type: "response.output_text.delta", delta: "ok" },
+          {
+            type: "response.completed",
+            response: {
+              id: `resp_manual_${upstreamCalls}`,
+              status: "completed",
+              created_at: Date.parse("2026-06-17T15:30:00.000Z") / 1000,
+              usage: {
+                input_tokens: upstreamCalls * 10,
+                output_tokens: upstreamCalls,
+                total_tokens: upstreamCalls * 11,
+              },
+            },
+          },
+        ]);
+      },
+    });
+
+    const first = await fetch(`${baseUrl}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        input: [{ role: "user", content: "first account" }],
+        stream: true,
+      }),
+    });
+    expect(first.status).toBe(200);
+    await first.text();
+
+    auth.switchAccount("codex", "a2");
+
+    const second = await fetch(`${baseUrl}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        input: [{ role: "user", content: "second account" }],
+        stream: true,
+      }),
+    });
+    expect(second.status).toBe(200);
+    await second.text();
+
+    const firstFingerprint = providerAccountFingerprintFor("codex", "acct-manual-1");
+    const secondFingerprint = providerAccountFingerprintFor("codex", "acct-manual-2");
+    expect(
+      JSON.parse(
+        readFileSync(getCodexEportDailySnapshotPath(home, firstFingerprint, "2026-06-17"), "utf8"),
+      ),
+    ).toMatchObject({ totalTokens: 11, providerAccountFingerprint: firstFingerprint });
+    expect(
+      JSON.parse(
+        readFileSync(getCodexEportDailySnapshotPath(home, secondFingerprint, "2026-06-17"), "utf8"),
+      ),
+    ).toMatchObject({ totalTokens: 22, providerAccountFingerprint: secondFingerprint });
   });
 
   it("logs failed Codex usage writes without corrupting the client stream", async () => {
@@ -1273,7 +1351,19 @@ describe("edge router", () => {
         }
         return codexSseResponse([
           { type: "response.output_text.delta", delta: "ok" },
-          { type: "response.completed", response: { status: "completed" } },
+          {
+            type: "response.completed",
+            response: {
+              id: "resp_after_rotation",
+              status: "completed",
+              created_at: Date.parse("2026-06-17T20:00:00.000Z") / 1000,
+              usage: {
+                input_tokens: 40,
+                output_tokens: 5,
+                total_tokens: 45,
+              },
+            },
+          },
         ]);
       },
     });
@@ -1305,8 +1395,27 @@ describe("edge router", () => {
     });
 
     expect(response.status).toBe(200);
+    await response.text();
     expect(upstreamCalls).toBe(2);
     expect(accountIds).toEqual(["acct-1", "acct-2"]);
     expect(auth.accounts.getActiveEntry("codex")?.id).toBe("a2");
+
+    const exhaustedFingerprint = providerAccountFingerprintFor("codex", "acct-1");
+    const servedFingerprint = providerAccountFingerprintFor("codex", "acct-2");
+    expect(existsSync(getCodexEportRawEventsPath(home, exhaustedFingerprint))).toBe(false);
+    const rawEvents = readFileSync(getCodexEportRawEventsPath(home, servedFingerprint), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(rawEvents).toHaveLength(1);
+    expect(rawEvents[0]).toMatchObject({
+      responseId: "resp_after_rotation",
+      providerAccountFingerprint: servedFingerprint,
+    });
+    expect(
+      JSON.parse(
+        readFileSync(getCodexEportDailySnapshotPath(home, servedFingerprint, "2026-06-17"), "utf8"),
+      ),
+    ).toMatchObject({ totalTokens: 45, providerAccountFingerprint: servedFingerprint });
   });
 });

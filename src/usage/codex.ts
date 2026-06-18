@@ -1,22 +1,21 @@
 import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname, join } from "node:path";
-
-import {
-  appendJsonLine,
+  appendUniqueJsonLine,
+  joinHomePath,
   normalizeRecordedAt,
+  readJsonLines,
   readRecord,
   readToken,
   reportingDay,
   safePathSegment,
+  upsertJsonLine,
+  writeJsonFileAtomic,
 } from "./common.ts";
 
-export { providerAccountFingerprintFor, reportingDay } from "./common.ts";
+export {
+  fallbackProviderAccountFingerprintFor,
+  providerAccountFingerprintFor,
+  reportingDay,
+} from "./common.ts";
 
 export type CodexUsageFinish = "stop" | "tool_calls";
 
@@ -89,34 +88,22 @@ export function recordCodexCalculatedUsage(
     normalizedUsage,
   };
 
-  appendJsonLine(getCodexEportRawEventsPath(input.home, input.providerAccountFingerprint), event);
-  appendJsonLine(
-    getCodexEportSessionFilePath(input.home, input.providerAccountFingerprint, recordedAt),
-    {
-      timestamp: recordedAt,
-      type: "event_msg",
-      payload: {
-        type: "token_count",
-        info: {
-          model: input.bareModelId,
-          last_token_usage: toCodexCcusageTokens(normalizedUsage),
-          total_token_usage: toCodexCcusageTokens(normalizedUsage),
-          metadata: {
-            source: "eport",
-            providerAccountFingerprint: input.providerAccountFingerprint,
-            responseId: input.responseId,
-            clientModel: input.clientModel,
-            effort: input.effort,
-            fastTier: input.fastTier,
-            finish: input.finish,
-          },
-        },
-      },
-    },
+  const rawEventsPath = getCodexEportRawEventsPath(input.home, input.providerAccountFingerprint);
+  appendUniqueJsonLine(rawEventsPath, event, event.id, readEventId);
+  const canonicalEvent = readRawEvents(rawEventsPath).find((row) => row.id === event.id) ?? event;
+  upsertJsonLine(
+    getCodexEportSessionFilePath(
+      input.home,
+      input.providerAccountFingerprint,
+      canonicalEvent.recordedAt,
+    ),
+    toCodexSessionRow(canonicalEvent),
+    canonicalEvent.id,
+    readCodexSessionEventId,
   );
-  writeDailySnapshot(input.home, input.providerAccountFingerprint, event);
+  writeDailySnapshot(input.home, input.providerAccountFingerprint, canonicalEvent);
 
-  return event;
+  return canonicalEvent;
 }
 
 export function normalizeCodexUsage(usage: Record<string, unknown>): CodexUsageTotals {
@@ -149,7 +136,7 @@ export function getCodexEportAccountPartitionPath(
   home: string,
   providerAccountFingerprint: string,
 ): string {
-  return join(
+  return joinHomePath(
     home,
     ".codex",
     "eport-accounts",
@@ -161,7 +148,7 @@ export function getCodexEportRawEventsPath(
   home: string,
   providerAccountFingerprint: string,
 ): string {
-  return join(
+  return joinHomePath(
     getCodexEportAccountPartitionPath(home, providerAccountFingerprint),
     "eport",
     "raw-events.jsonl",
@@ -173,7 +160,7 @@ export function getCodexEportDailySnapshotPath(
   providerAccountFingerprint: string,
   day: string,
 ): string {
-  return join(
+  return joinHomePath(
     getCodexEportAccountPartitionPath(home, providerAccountFingerprint),
     "eport",
     "daily",
@@ -187,7 +174,7 @@ export function getCodexEportSessionFilePath(
   recordedAt: string,
 ): string {
   const day = reportingDay(recordedAt);
-  return join(
+  return joinHomePath(
     getCodexEportAccountPartitionPath(home, providerAccountFingerprint),
     "sessions",
     "eport-cursor-proxy",
@@ -204,10 +191,7 @@ function writeDailySnapshot(
   const rawEvents = readRawEvents(getCodexEportRawEventsPath(home, providerAccountFingerprint));
   const snapshot = buildDailySnapshot(rawEvents, providerAccountFingerprint, day, event.recordedAt);
   const path = getCodexEportDailySnapshotPath(home, providerAccountFingerprint, day);
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
-  renameSync(tmp, path);
+  writeJsonFileAtomic(path, snapshot);
 }
 
 function buildDailySnapshot(
@@ -246,19 +230,14 @@ function buildDailySnapshot(
 }
 
 function readRawEvents(path: string): CodexCalculatedUsageRawEvent[] {
-  if (!existsSync(path)) return [];
-  return readFileSync(path, "utf8")
-    .split(/\r?\n/)
-    .filter((line) => line.trim().length > 0)
-    .flatMap((line) => {
-      try {
-        const parsed = JSON.parse(line) as CodexCalculatedUsageRawEvent;
-        if (!parsed || parsed.provider !== "codex") return [];
-        return [parsed];
-      } catch {
-        return [];
-      }
-    });
+  const events = new Map<string, CodexCalculatedUsageRawEvent>();
+  for (const value of readJsonLines(path)) {
+    const parsed = readRecord(value) as CodexCalculatedUsageRawEvent | null;
+    if (!parsed || parsed.provider !== "codex") continue;
+    if (typeof parsed.id !== "string" || events.has(parsed.id)) continue;
+    events.set(parsed.id, parsed);
+  }
+  return [...events.values()];
 }
 
 function toCodexCcusageTokens(totals: CodexUsageTotals): Record<string, number> {
@@ -268,6 +247,31 @@ function toCodexCcusageTokens(totals: CodexUsageTotals): Record<string, number> 
     output_tokens: totals.outputTokens,
     reasoning_output_tokens: totals.reasoningOutputTokens,
     total_tokens: totals.totalTokens,
+  };
+}
+
+function toCodexSessionRow(event: CodexCalculatedUsageRawEvent): Record<string, unknown> {
+  return {
+    timestamp: event.recordedAt,
+    type: "event_msg",
+    payload: {
+      type: "token_count",
+      info: {
+        model: event.bareModelId,
+        last_token_usage: toCodexCcusageTokens(event.normalizedUsage),
+        total_token_usage: toCodexCcusageTokens(event.normalizedUsage),
+        metadata: {
+          source: "eport",
+          providerAccountFingerprint: event.providerAccountFingerprint,
+          responseId: event.responseId,
+          eventId: event.id,
+          clientModel: event.clientModel,
+          effort: event.effort,
+          fastTier: event.fastTier,
+          finish: event.finish,
+        },
+      },
+    },
   };
 }
 
@@ -298,4 +302,17 @@ function codexRawEventId(
     return `eport:codex:${providerAccountFingerprint}:${responseId}`;
   }
   return `eport:codex:${providerAccountFingerprint}:${recordedAt}:${crypto.randomUUID()}`;
+}
+
+function readEventId(value: unknown): string | null {
+  const record = readRecord(value);
+  return typeof record?.id === "string" ? record.id : null;
+}
+
+function readCodexSessionEventId(value: unknown): string | null {
+  const record = readRecord(value);
+  const payload = readRecord(record?.payload);
+  const info = readRecord(payload?.info);
+  const metadata = readRecord(info?.metadata);
+  return typeof metadata?.eventId === "string" ? metadata.eventId : null;
 }

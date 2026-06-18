@@ -1,20 +1,17 @@
 import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname, join } from "node:path";
-
-import {
-  appendJsonLine,
+  appendUniqueJsonLine,
+  joinHomePath,
   normalizeRecordedAt,
+  readJsonLines,
   readRecord,
   readToken,
   reportingDay,
   safePathSegment,
+  upsertJsonLine,
+  writeJsonFileAtomic,
 } from "./common.ts";
+
+export { fallbackProviderAccountFingerprintFor } from "./common.ts";
 
 export type ClaudeUsageFinish = string;
 
@@ -85,31 +82,22 @@ export function recordClaudeCalculatedUsage(
     normalizedUsage,
   };
 
-  appendJsonLine(getClaudeEportRawEventsPath(input.home, input.providerAccountFingerprint), event);
-  appendJsonLine(
-    getClaudeEportSessionFilePath(input.home, input.providerAccountFingerprint, recordedAt),
-    {
-      sessionId: "eport-cursor-proxy",
-      timestamp: recordedAt,
-      version: "1.0.0",
-      requestId: event.id,
-      message: {
-        id: input.responseId ?? event.id,
-        model: input.bareModelId,
-        usage: toClaudeCodeUsage(normalizedUsage),
-      },
-      eport: {
-        providerAccountFingerprint: input.providerAccountFingerprint,
-        responseId: input.responseId,
-        clientModel: input.clientModel,
-        effort: input.effort,
-        finish: input.finish,
-      },
-    },
+  const rawEventsPath = getClaudeEportRawEventsPath(input.home, input.providerAccountFingerprint);
+  appendUniqueJsonLine(rawEventsPath, event, event.id, readEventId);
+  const canonicalEvent = readRawEvents(rawEventsPath).find((row) => row.id === event.id) ?? event;
+  upsertJsonLine(
+    getClaudeEportSessionFilePath(
+      input.home,
+      input.providerAccountFingerprint,
+      canonicalEvent.recordedAt,
+    ),
+    toClaudeSessionRow(canonicalEvent),
+    canonicalEvent.id,
+    readClaudeSessionEventId,
   );
-  writeDailySnapshot(input.home, input.providerAccountFingerprint, event);
+  writeDailySnapshot(input.home, input.providerAccountFingerprint, canonicalEvent);
 
-  return event;
+  return canonicalEvent;
 }
 
 export function normalizeClaudeUsage(usage: Record<string, unknown>): ClaudeUsageTotals {
@@ -142,7 +130,7 @@ export function getClaudeEportAccountPartitionPath(
   home: string,
   providerAccountFingerprint: string,
 ): string {
-  return join(
+  return joinHomePath(
     home,
     ".claude",
     "eport-accounts",
@@ -154,7 +142,7 @@ export function getClaudeEportRawEventsPath(
   home: string,
   providerAccountFingerprint: string,
 ): string {
-  return join(
+  return joinHomePath(
     getClaudeEportAccountPartitionPath(home, providerAccountFingerprint),
     "eport",
     "raw-events.jsonl",
@@ -166,7 +154,7 @@ export function getClaudeEportDailySnapshotPath(
   providerAccountFingerprint: string,
   day: string,
 ): string {
-  return join(
+  return joinHomePath(
     getClaudeEportAccountPartitionPath(home, providerAccountFingerprint),
     "eport",
     "daily",
@@ -178,7 +166,7 @@ export function getClaudeEportProjectPath(
   home: string,
   providerAccountFingerprint: string,
 ): string {
-  return join(
+  return joinHomePath(
     getClaudeEportAccountPartitionPath(home, providerAccountFingerprint),
     "projects",
     "eport-cursor-proxy",
@@ -191,7 +179,7 @@ export function getClaudeEportSessionFilePath(
   recordedAt: string,
 ): string {
   const day = reportingDay(recordedAt);
-  return join(getClaudeEportProjectPath(home, providerAccountFingerprint), `${day}.jsonl`);
+  return joinHomePath(getClaudeEportProjectPath(home, providerAccountFingerprint), `${day}.jsonl`);
 }
 
 function writeDailySnapshot(
@@ -203,10 +191,7 @@ function writeDailySnapshot(
   const rawEvents = readRawEvents(getClaudeEportRawEventsPath(home, providerAccountFingerprint));
   const snapshot = buildDailySnapshot(rawEvents, providerAccountFingerprint, day, event.recordedAt);
   const path = getClaudeEportDailySnapshotPath(home, providerAccountFingerprint, day);
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
-  renameSync(tmp, path);
+  writeJsonFileAtomic(path, snapshot);
 }
 
 function buildDailySnapshot(
@@ -245,19 +230,14 @@ function buildDailySnapshot(
 }
 
 function readRawEvents(path: string): ClaudeCalculatedUsageRawEvent[] {
-  if (!existsSync(path)) return [];
-  return readFileSync(path, "utf8")
-    .split(/\r?\n/)
-    .filter((line) => line.trim().length > 0)
-    .flatMap((line) => {
-      try {
-        const parsed = JSON.parse(line) as ClaudeCalculatedUsageRawEvent;
-        if (!parsed || parsed.provider !== "claude") return [];
-        return [parsed];
-      } catch {
-        return [];
-      }
-    });
+  const events = new Map<string, ClaudeCalculatedUsageRawEvent>();
+  for (const value of readJsonLines(path)) {
+    const parsed = readRecord(value) as ClaudeCalculatedUsageRawEvent | null;
+    if (!parsed || parsed.provider !== "claude") continue;
+    if (typeof parsed.id !== "string" || events.has(parsed.id)) continue;
+    events.set(parsed.id, parsed);
+  }
+  return [...events.values()];
 }
 
 function toClaudeCodeUsage(totals: ClaudeUsageTotals): Record<string, unknown> {
@@ -266,6 +246,27 @@ function toClaudeCodeUsage(totals: ClaudeUsageTotals): Record<string, unknown> {
     output_tokens: totals.outputTokens,
     cache_creation_input_tokens: totals.cacheCreationInputTokens,
     cache_read_input_tokens: totals.cacheReadInputTokens,
+  };
+}
+
+function toClaudeSessionRow(event: ClaudeCalculatedUsageRawEvent): Record<string, unknown> {
+  return {
+    sessionId: "eport-cursor-proxy",
+    timestamp: event.recordedAt,
+    version: "1.0.0",
+    requestId: event.id,
+    message: {
+      id: event.responseId ?? event.id,
+      model: event.bareModelId,
+      usage: toClaudeCodeUsage(event.normalizedUsage),
+    },
+    eport: {
+      providerAccountFingerprint: event.providerAccountFingerprint,
+      responseId: event.responseId,
+      clientModel: event.clientModel,
+      effort: event.effort,
+      finish: event.finish,
+    },
   };
 }
 
@@ -310,4 +311,14 @@ function claudeRawEventId(
     return `eport:claude:${providerAccountFingerprint}:${responseId}`;
   }
   return `eport:claude:${providerAccountFingerprint}:${recordedAt}:${crypto.randomUUID()}`;
+}
+
+function readEventId(value: unknown): string | null {
+  const record = readRecord(value);
+  return typeof record?.id === "string" ? record.id : null;
+}
+
+function readClaudeSessionEventId(value: unknown): string | null {
+  const record = readRecord(value);
+  return typeof record?.requestId === "string" ? record.requestId : null;
 }

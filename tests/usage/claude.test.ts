@@ -1,9 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, posix, win32 } from "node:path";
 
-import { providerAccountFingerprintFor } from "../../src/usage/common.ts";
+import {
+  fallbackProviderAccountFingerprintFor,
+  providerAccountFingerprintFor,
+} from "../../src/usage/common.ts";
 import {
   getClaudeEportAccountPartitionPath,
   getClaudeEportDailySnapshotPath,
@@ -155,4 +158,153 @@ describe("Claude calculated usage", () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+
+  it("writes separate daily snapshots for two Provider Account fingerprints", () => {
+    const home = mkdtempSync(join(tmpdir(), "eport-claude-two-accounts-"));
+    const work = providerAccountFingerprintFor("claude", "claude-work");
+    const personal = providerAccountFingerprintFor("claude", "claude-personal");
+
+    try {
+      recordClaudeCalculatedUsage({
+        home,
+        providerAccountFingerprint: work,
+        responseId: "msg_work",
+        clientModel: "opus-4.8max",
+        bareModelId: "opus-4.8",
+        effort: "max",
+        finish: "stop",
+        recordedAt: "2026-06-17T17:00:00.000Z",
+        usage: {
+          input_tokens: 10,
+          cache_creation_input_tokens: 2,
+          cache_read_input_tokens: 3,
+          output_tokens: 4,
+        },
+      });
+      recordClaudeCalculatedUsage({
+        home,
+        providerAccountFingerprint: personal,
+        responseId: "msg_personal",
+        clientModel: "opus-4.8high",
+        bareModelId: "opus-4.8",
+        effort: "high",
+        finish: "tool_calls",
+        recordedAt: "2026-06-17T17:05:00.000Z",
+        usage: {
+          input_tokens: 30,
+          cache_creation_input_tokens: 4,
+          cache_read_input_tokens: 5,
+          output_tokens: 6,
+        },
+      });
+
+      const workSnapshot = readJsonFile(
+        getClaudeEportDailySnapshotPath(home, work, "2026-06-17"),
+      );
+      const personalSnapshot = readJsonFile(
+        getClaudeEportDailySnapshotPath(home, personal, "2026-06-17"),
+      );
+      expect(workSnapshot).toMatchObject({
+        dataIdentity: `eport:claude:${work}:daily:2026-06-17`,
+        providerAccountFingerprint: work,
+        totalTokens: 19,
+      });
+      expect(personalSnapshot).toMatchObject({
+        dataIdentity: `eport:claude:${personal}:daily:2026-06-17`,
+        providerAccountFingerprint: personal,
+        totalTokens: 45,
+      });
+      expect(existsSync(join(home, ".claude", "projects"))).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps unknown Claude ownership under the provider fallback account", () => {
+    const home = mkdtempSync(join(tmpdir(), "eport-claude-fallback-"));
+    const fallback = fallbackProviderAccountFingerprintFor("claude");
+
+    try {
+      recordClaudeCalculatedUsage({
+        home,
+        providerAccountFingerprint: fallback,
+        responseId: "msg_unknown",
+        clientModel: "opus-4.8",
+        bareModelId: "opus-4.8",
+        effort: null,
+        finish: "stop",
+        recordedAt: "2026-06-17T18:00:00.000Z",
+        usage: { input_tokens: 5, output_tokens: 1 },
+      });
+
+      expect(existsSync(getClaudeEportRawEventsPath(home, fallback))).toBe(true);
+      expect(readJsonFile(getClaudeEportDailySnapshotPath(home, fallback, "2026-06-17"))).toMatchObject({
+        dataIdentity: `eport:claude:${fallback}:daily:2026-06-17`,
+        providerAccountFingerprint: fallback,
+        totalTokens: 6,
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("dedupes replayed message ids across raw events, project rows, and daily totals", () => {
+    const home = mkdtempSync(join(tmpdir(), "eport-claude-replay-"));
+    const fingerprint = providerAccountFingerprintFor("claude", "claude-replay");
+
+    try {
+      const input = {
+        home,
+        providerAccountFingerprint: fingerprint,
+        responseId: "msg_replay",
+        clientModel: "opus-4.8",
+        bareModelId: "opus-4.8",
+        effort: null,
+        finish: "stop",
+        recordedAt: "2026-06-17T19:00:00.000Z",
+        usage: { input_tokens: 10, output_tokens: 2 },
+      };
+      recordClaudeCalculatedUsage(input);
+      recordClaudeCalculatedUsage({
+        ...input,
+        recordedAt: "2026-06-17T19:05:00.000Z",
+        usage: { input_tokens: 1000, output_tokens: 2000 },
+      });
+
+      expect(readJsonLines(getClaudeEportRawEventsPath(home, fingerprint))).toHaveLength(1);
+      expect(
+        readJsonLines(
+          getClaudeEportSessionFilePath(home, fingerprint, "2026-06-17T19:00:00.000Z"),
+        ),
+      ).toHaveLength(1);
+      expect(readJsonFile(getClaudeEportDailySnapshotPath(home, fingerprint, "2026-06-17"))).toMatchObject({
+        inputTokens: 10,
+        outputTokens: 2,
+        totalTokens: 12,
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("builds account partition paths for macOS and Windows homes", () => {
+    expect(getClaudeEportAccountPartitionPath("/Users/dev", "fp_account")).toBe(
+      posix.join("/Users/dev", ".claude", "eport-accounts", "fp_account"),
+    );
+    expect(getClaudeEportAccountPartitionPath("C:\\Users\\dev", "fp:bad/path")).toBe(
+      win32.join("C:\\Users\\dev", ".claude", "eport-accounts", "fp_bad_path"),
+    );
+  });
 });
+
+function readJsonLines(path: string): Array<Record<string, unknown>> {
+  return readFileSync(path, "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+function readJsonFile(path: string): Record<string, unknown> {
+  return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+}

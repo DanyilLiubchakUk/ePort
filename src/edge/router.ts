@@ -18,7 +18,11 @@ import {
   recordClaudeCalculatedUsage,
   type ClaudeUsageRecorder,
 } from "../usage/claude.ts";
-import { providerAccountFingerprintFor } from "../usage/common.ts";
+import {
+  fallbackProviderAccountFingerprintFor,
+  providerAccountFingerprintFor,
+} from "../usage/common.ts";
+import type { AccountEntry } from "../auth/account-types.ts";
 import {
   authorizeProxyRequest,
   unauthorizedResponse,
@@ -331,11 +335,7 @@ function createCodexUsageCaptureHandler(
   clientModel: string,
 ): (capture: CodexCompletedUsageCapture) => void {
   const activeEntry = deps.auth.accounts.getActiveEntry("codex");
-  const accountIdentity = activeEntry?.accountKey || credentials.accountId || activeEntry?.id || "unknown";
-  const providerAccountFingerprint = providerAccountFingerprintFor(
-    "codex",
-    accountIdentity,
-  );
+  const providerAccountFingerprint = codexUsageFingerprint(activeEntry, credentials);
   const recorder = deps.codexUsageRecorder ?? recordCodexCalculatedUsage;
 
   return (capture) => {
@@ -495,12 +495,7 @@ function createClaudeUsageCaptureHandler(
   clientModel: string,
 ): (capture: ClaudeCompletedUsageCapture) => void {
   const activeEntry = deps.auth.accounts.getActiveEntry("claude");
-  const accountIdentity =
-    activeEntry?.accountKey || activeEntry?.id || credentials.storePath || "unknown";
-  const providerAccountFingerprint = providerAccountFingerprintFor(
-    "claude",
-    accountIdentity,
-  );
+  const providerAccountFingerprint = claudeUsageFingerprint(activeEntry, credentials);
   const recorder = deps.claudeUsageRecorder ?? recordClaudeCalculatedUsage;
 
   return (capture) => {
@@ -523,6 +518,34 @@ function createClaudeUsageCaptureHandler(
       );
     }
   };
+}
+
+function codexUsageFingerprint(
+  activeEntry: AccountEntry | null,
+  credentials: Awaited<ReturnType<AuthManager["getCodexCredentials"]>>,
+): string {
+  const queuedIdentity =
+    activeEntry?.authPath === credentials.storePath
+      ? activeEntry.accountKey || activeEntry.id
+      : null;
+  const identity = queuedIdentity || credentials.accountId;
+  return identity
+    ? providerAccountFingerprintFor("codex", identity)
+    : fallbackProviderAccountFingerprintFor("codex");
+}
+
+function claudeUsageFingerprint(
+  activeEntry: AccountEntry | null,
+  credentials: Awaited<ReturnType<AuthManager["getClaudeCredentials"]>>,
+): string {
+  const queuedIdentity =
+    activeEntry?.authPath === credentials.storePath
+      ? activeEntry.accountKey || activeEntry.id
+      : null;
+  const identity = queuedIdentity || credentials.storePath;
+  return identity
+    ? providerAccountFingerprintFor("claude", identity)
+    : fallbackProviderAccountFingerprintFor("claude");
 }
 
 function readClaudeMessageTimestamp(message: Record<string, unknown> | null): string | number | null {
