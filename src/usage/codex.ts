@@ -348,22 +348,27 @@ function addEventToDailySnapshot(
   const models = snapshot.models.map((model) => ({ ...model }));
   let model = models.find((entry) => entry.bareModelId === event.bareModelId);
   if (!model) {
-    model = { bareModelId: event.bareModelId, ...emptyTotals() };
+    model = { bareModelId: event.bareModelId, ...emptyDailyTotals() };
     models.push(model);
   }
-  addTotals(model, event.normalizedUsage);
+  addUsageToDailyTotals(model, event.normalizedUsage);
+
+  const totals = {
+    inputTokens: snapshot.inputTokens,
+    rawInputTokens: snapshot.rawInputTokens,
+    cachedInputTokens: snapshot.cachedInputTokens,
+    outputTokens: snapshot.outputTokens,
+    reasoningOutputTokens: snapshot.reasoningOutputTokens,
+    totalTokens: snapshot.totalTokens,
+  };
+  addUsageToDailyTotals(totals, event.normalizedUsage);
 
   return {
     ...snapshot,
     ...(snapshot.providerAccountIdentity || !event.providerAccountIdentity
       ? {}
       : { providerAccountIdentity: event.providerAccountIdentity }),
-    inputTokens: snapshot.inputTokens + event.normalizedUsage.inputTokens,
-    cachedInputTokens: snapshot.cachedInputTokens + event.normalizedUsage.cachedInputTokens,
-    outputTokens: snapshot.outputTokens + event.normalizedUsage.outputTokens,
-    reasoningOutputTokens:
-      snapshot.reasoningOutputTokens + event.normalizedUsage.reasoningOutputTokens,
-    totalTokens: snapshot.totalTokens + event.normalizedUsage.totalTokens,
+    ...totals,
     costUSD: null,
     costSource: "unknown",
     updatedAt: event.recordedAt,
@@ -385,10 +390,17 @@ function readDailySnapshot(
     ? record.models.flatMap((model) => {
         const item = readRecord(model);
         if (!item || typeof item.bareModelId !== "string") return [];
+        const cachedInputTokens = readToken(item.cachedInputTokens) ?? 0;
+        const rawInputTokens = readToken(item.rawInputTokens);
+        const storedInputTokens = readToken(item.inputTokens) ?? 0;
         return [{
           bareModelId: item.bareModelId,
-          inputTokens: readToken(item.inputTokens) ?? 0,
-          cachedInputTokens: readToken(item.cachedInputTokens) ?? 0,
+          inputTokens:
+            rawInputTokens === null
+              ? nonCachedInputTokens(storedInputTokens, cachedInputTokens)
+              : storedInputTokens,
+          rawInputTokens: rawInputTokens ?? storedInputTokens,
+          cachedInputTokens,
           outputTokens: readToken(item.outputTokens) ?? 0,
           reasoningOutputTokens: readToken(item.reasoningOutputTokens) ?? 0,
           totalTokens: readToken(item.totalTokens) ?? 0,
@@ -399,6 +411,9 @@ function readDailySnapshot(
   const providerAccountIdentity = readRecord(record.providerAccountIdentity) as
     | CodexProviderAccountIdentity
     | null;
+  const cachedInputTokens = readToken(record.cachedInputTokens) ?? 0;
+  const rawInputTokens = readToken(record.rawInputTokens);
+  const storedInputTokens = readToken(record.inputTokens) ?? 0;
   return {
     dataIdentity:
       typeof record.dataIdentity === "string"
@@ -408,8 +423,12 @@ function readDailySnapshot(
     providerAccountFingerprint,
     ...(providerAccountIdentity ? { providerAccountIdentity } : {}),
     date: day,
-    inputTokens: readToken(record.inputTokens) ?? 0,
-    cachedInputTokens: readToken(record.cachedInputTokens) ?? 0,
+    inputTokens:
+      rawInputTokens === null
+        ? nonCachedInputTokens(storedInputTokens, cachedInputTokens)
+        : storedInputTokens,
+    rawInputTokens: rawInputTokens ?? storedInputTokens,
+    cachedInputTokens,
     outputTokens: readToken(record.outputTokens) ?? 0,
     reasoningOutputTokens: readToken(record.reasoningOutputTokens) ?? 0,
     totalTokens: readToken(record.totalTokens) ?? 0,
@@ -425,8 +444,14 @@ function findRawEvent(
   providerAccountFingerprint: string,
   eventId: string,
   recordedAt: string,
+  reportingTimeZone?: string,
 ): CodexCalculatedUsageRawEvent | null {
-  for (const path of getRawEventCandidatePaths(home, providerAccountFingerprint, recordedAt)) {
+  for (const path of getRawEventCandidatePaths(
+    home,
+    providerAccountFingerprint,
+    recordedAt,
+    reportingTimeZone,
+  )) {
     const found = readCodexRawEvent(
       findJsonLine(path, (value) => readEventId(value) === eventId),
     );
@@ -439,14 +464,20 @@ function forEachRawEventForDay(
   home: string,
   providerAccountFingerprint: string,
   day: string,
+  reportingTimeZone: string | undefined,
   onEvent: (event: CodexCalculatedUsageRawEvent) => void,
 ): void {
-  for (const path of getRawEventCandidatePaths(home, providerAccountFingerprint, day)) {
+  for (const path of getRawEventCandidatePaths(
+    home,
+    providerAccountFingerprint,
+    day,
+    reportingTimeZone,
+  )) {
     forEachJsonLine(path, (value) => {
       const event = readCodexRawEvent(value);
       if (!event) return;
       if (event.providerAccountFingerprint !== providerAccountFingerprint) return;
-      if (reportingDay(event.recordedAt) !== day) return;
+      if (reportingDay(event.recordedAt, reportingTimeZone) !== day) return;
       onEvent(event);
     });
   }
@@ -456,9 +487,10 @@ function getRawEventCandidatePaths(
   home: string,
   providerAccountFingerprint: string,
   recordedAt: string,
+  reportingTimeZone?: string,
 ): string[] {
   return [
-    getCodexEportRawEventsPath(home, providerAccountFingerprint, recordedAt),
+    getCodexEportRawEventsPath(home, providerAccountFingerprint, recordedAt, reportingTimeZone),
     getCodexEportRawEventsPath(home, providerAccountFingerprint),
   ];
 }
@@ -508,9 +540,10 @@ function toCodexSessionRow(event: CodexCalculatedUsageRawEvent): Record<string, 
   };
 }
 
-function emptyTotals(): CodexUsageTotals {
+function emptyDailyTotals(): CodexDailyUsageTotals {
   return {
     inputTokens: 0,
+    rawInputTokens: 0,
     cachedInputTokens: 0,
     outputTokens: 0,
     reasoningOutputTokens: 0,
@@ -518,12 +551,17 @@ function emptyTotals(): CodexUsageTotals {
   };
 }
 
-function addTotals(target: CodexUsageTotals, next: CodexUsageTotals): void {
-  target.inputTokens += next.inputTokens;
+function addUsageToDailyTotals(target: CodexDailyUsageTotals, next: CodexUsageTotals): void {
+  target.inputTokens += nonCachedInputTokens(next.inputTokens, next.cachedInputTokens);
+  target.rawInputTokens += next.inputTokens;
   target.cachedInputTokens += next.cachedInputTokens;
   target.outputTokens += next.outputTokens;
   target.reasoningOutputTokens += next.reasoningOutputTokens;
   target.totalTokens += next.totalTokens;
+}
+
+function nonCachedInputTokens(inputTokens: number, cachedInputTokens: number): number {
+  return Math.max(0, inputTokens - cachedInputTokens);
 }
 
 function codexRawEventId(

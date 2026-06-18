@@ -103,8 +103,8 @@ After `eport up`, the user pastes a copy-paste block (Base URL ending in `/v1`, 
 47. As a user, I want `eport config model opus-4.8 --effort max` to save Anthropic-native effort for Claude models, so that config values match provider APIs.
 48. As a user, I want `eport config` (interactive **interactive config**) with provider-aware effort radio buttons and Codex-only fast checkbox, so that guided setup matches flag one-liners.
 49. As a user finishing the wizard, I want the **flag equivalent** one-liner printed, so that I can script or repeat the same settings.
-50. As a user, I want **effort precedence** locked: request body effort/thinking (Q11) → model suffix → per-model default → global default, so that Cursor body intent wins when present.
-51. As a user, I want body effort to beat suffix (e.g. `gpt-5.5xhigh` + body `medium` → `medium`), so that harness/settings overrides model picker suffixes.
+50. As a user, I want **effort precedence** locked: model suffix → request body effort/thinking (Q11) → per-model default → global default, so that explicit model-picker suffixes remain deterministic while body intent is honored for bare models.
+51. As a user, I want suffix effort to beat body effort (e.g. `gpt-5.5xhigh` + body `medium` → `xhigh`), so that a custom model string can reliably pin reasoning.
 52. As a user, I want Codex **suffix grammar** `[bare-model-id][effort-token][-fast]` (e.g. `gpt-5.5xhigh-fast`), so that one custom model string encodes effort and fast tier.
 53. As a user, I want Claude **suffix grammar** `[bare-model-id][effort-token]` only (e.g. `opus-4.8max`), so that I do not confuse Codex fast suffixes with Claude routes.
 54. As a user, I want `eport config --fast on` to set **global fast override** (Codex `service_tier: priority` on every Codex request), so that I avoid adding `-fast` to every custom model.
@@ -231,12 +231,12 @@ interface EdgeRouter {
    - Codex: `[bare-model-id][effort-token][-fast]`
    - Claude: `[bare-model-id][effort-token]` only; reject Codex-only tokens (`xhigh`, `-fast`).
 3. **Effort precedence** (ADR 0005, Q11):
-   - Body effort/thinking fields when present (Codex: `reasoning.effort`, `reasoning_effort`, `reasoning`; Claude: same plus `thinking`, `thinking.budget_tokens`, Anthropic effort fields on normalized internal request).
-   - Else suffix effort token.
+   - Suffix effort token when present.
+   - Else body effort/thinking fields when present (Codex: `reasoning.effort`, `reasoning_effort`, `reasoning`; Claude: same plus `thinking`, `thinking.budget_tokens`, Anthropic effort fields on normalized internal request).
    - Else **default effort profile** for bare model in config.
    - Else global default.
-   - Body beats suffix always.
-4. **Fast mode stack** (Codex only): body `service_tier` → `-fast` suffix → per-model config → **global fast override** / session `--fast`.
+   - Suffix beats body when both are present.
+4. **Fast mode stack** (Codex only): `-fast` suffix → **global fast override** / session `--fast` → body `service_tier` → per-model config.
 5. Emit **bare model name** (post-strip) for upstream forward and config key lookup.
 
 **Dynamic catalog (`GET /v1/models`):**

@@ -116,7 +116,8 @@ describe("Codex calculated usage", () => {
         providerAccountFingerprint: fingerprint,
         providerAccountIdentity,
         date: "2026-06-17",
-        inputTokens: 300,
+        inputTokens: 210,
+        rawInputTokens: 300,
         cachedInputTokens: 90,
         outputTokens: 55,
         reasoningOutputTokens: 25,
@@ -243,6 +244,53 @@ describe("Codex calculated usage", () => {
     }
   });
 
+  it("buckets Codex ePort files by reporting timezone", () => {
+    const home = mkdtempSync(join(tmpdir(), "eport-codex-timezone-"));
+    const fingerprint = providerAccountFingerprintFor("codex", "acct-timezone");
+
+    try {
+      recordCodexCalculatedUsage({
+        home,
+        providerAccountFingerprint: fingerprint,
+        responseId: "resp_timezone",
+        clientModel: "gpt-5.5",
+        bareModelId: "gpt-5.5",
+        effort: null,
+        fastTier: false,
+        finish: "stop",
+        recordedAt: "2026-06-18T03:30:00.000Z",
+        reportingTimeZone: "America/New_York",
+        usage: {
+          input_tokens: 100,
+          input_tokens_details: { cached_tokens: 80 },
+          output_tokens: 5,
+          total_tokens: 105,
+        },
+      });
+
+      expect(
+        existsSync(getCodexEportRawEventsPath(home, fingerprint, "2026-06-17")),
+      ).toBe(true);
+      expect(
+        existsSync(getCodexEportSessionFilePath(home, fingerprint, "2026-06-17")),
+      ).toBe(true);
+      expect(readJsonFile(getCodexEportDailySnapshotPath(home, fingerprint, "2026-06-17")))
+        .toMatchObject({
+          date: "2026-06-17",
+          inputTokens: 20,
+          rawInputTokens: 100,
+          cachedInputTokens: 80,
+          outputTokens: 5,
+          totalTokens: 105,
+        });
+      expect(
+        existsSync(getCodexEportRawEventsPath(home, fingerprint, "2026-06-18")),
+      ).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it("dedupes replayed response ids across raw events, session rows, and daily totals", () => {
     const home = mkdtempSync(join(tmpdir(), "eport-codex-replay-"));
     const fingerprint = providerAccountFingerprintFor("codex", "acct-replay");
@@ -275,6 +323,7 @@ describe("Codex calculated usage", () => {
       ).toHaveLength(1);
       expect(readJsonFile(getCodexEportDailySnapshotPath(home, fingerprint, "2026-06-17"))).toMatchObject({
         inputTokens: 10,
+        rawInputTokens: 10,
         outputTokens: 2,
         totalTokens: 12,
       });
@@ -328,6 +377,7 @@ describe("Codex calculated usage", () => {
       expect(existsSync(getCodexEportRawEventsPath(home, fingerprint, "2026-06-17"))).toBe(false);
       expect(readJsonFile(getCodexEportDailySnapshotPath(home, fingerprint, "2026-06-17"))).toMatchObject({
         inputTokens: 10,
+        rawInputTokens: 10,
         outputTokens: 2,
         totalTokens: 12,
       });

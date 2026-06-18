@@ -31,14 +31,14 @@ Stable session identity across related requests so upstream providers can reuse 
 How much internal reasoning a model uses. **Codex** levels include `minimal`, `low`, `medium`, `high`, `xhigh`. **Claude** uses Anthropic-native levels only (see **Provider effort levels**). In Cursor flows, effort is set by the client in the request body or encoded in the model name suffix; proxies strip suffixes and forward provider-appropriate effort upstream. See **Effort precedence** and [docs/prd/eport-v1.md](./docs/prd/eport-v1.md). On Codex routes, **encrypted reasoning** payloads must pass through unchanged.
 
 ## Effort precedence
-Locked resolution order for reasoning/thinking effort (**highest wins**). Applies identically on **Codex and Claude routes** — body effort is honored on both when Cursor sends it (grill **Q11**); suffix/config/global apply only when the body omits effort.
+Locked resolution order for reasoning/thinking effort (**highest wins**). Applies identically on **Codex and Claude routes** — body effort is honored on both when Cursor sends it and no model suffix already fixed the effort.
 
 1. **Model suffix** — concatenated effort token on client model string.
 2. **Request body** — Codex: `reasoning.effort`, `reasoning_effort`, `reasoning`. Claude: same OpenAI-shaped fields plus native equivalents (`thinking`, `thinking.budget_tokens`, Anthropic effort fields) on the Messages translation path.
 3. **Per-model default** — **default effort profile** in `~/.eport/config`.
 4. **Global default** — fallback when nothing else is set.
 
-Suffix beats body when both are present (e.g. `gpt-5.5xhigh` + body `medium` → `xhigh`). On Claude routes, OpenAI-style body labels translate to Anthropic-native upstream values (never `xhigh`). Fast tier uses a separate Codex-only stack (`-fast` suffix → body `service_tier` → config → global). See [docs/prd/eport-v1.md](./docs/prd/eport-v1.md).
+Suffix beats body when both are present (e.g. `gpt-5.5xhigh` + body `medium` → `xhigh`). On Claude routes, OpenAI-style body labels translate to Anthropic-native upstream values (never `xhigh`). Fast tier uses a separate Codex-only stack: `-fast` suffix first, then global/session fast force overrides, then request body `service_tier`, then per-model config. See [docs/prd/eport-v1.md](./docs/prd/eport-v1.md).
 
 ## Encrypted reasoning
 Upstream reasoning delivered in encrypted form (`reasoning.encrypted_content`). The proxy forwards these payloads without decoding or re-encoding so Cursor can consume Codex reasoning. **v1** must-have for Codex.

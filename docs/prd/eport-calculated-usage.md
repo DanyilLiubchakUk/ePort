@@ -135,7 +135,7 @@ type PluginOutput = {
 - Team upload should upload account-bound child outputs separately, preserving the existing rule that each upload maps to one shared Provider Account.
 - Codex usage capture happens on `response.completed` when the event contains `response.usage`.
 - Codex usage should flush independent of finish reason. Finish is inferred as `tool_calls` when a function or custom tool item appeared before completion; otherwise `stop`.
-- Codex token fields preserve input tokens, cached input tokens, output tokens, reasoning output tokens, total tokens, and fast-tier/request context when available.
+- Codex raw events and ccusage-shaped session rows preserve upstream input tokens plus cached input tokens. Daily snapshots expose `inputTokens` as non-cached input and `rawInputTokens` as the original upstream input total, so cached input is not counted twice by eUsage-style displays.
 - Claude usage capture happens in both Claude stream translators. The implementation remembers the latest usage object from `message_delta.usage`, falls back to `message_start.message.usage`, and flushes one raw event on `message_stop`.
 - Claude token fields preserve input tokens, cache creation input tokens, cache read input tokens, output tokens, and server tool usage when present.
 - Daily snapshots are cumulative for the reporting day and replace/upsert by stable usage identity.
