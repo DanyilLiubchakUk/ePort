@@ -1,6 +1,6 @@
 # ePort v1 — Implementation slices
 
-Dependency-ordered vertical slices for [docs/prd/eport-v1.md](../docs/prd/eport-v1.md). Each slice is an end-to-end tracer bullet; completing slice 11 delivers fully working ePort v1.
+Dependency-ordered vertical slices for [docs/prd/eport-v1.md](../docs/prd/eport-v1.md). Each slice is an end-to-end tracer bullet; completing slice 17 delivers fully working ePort v1.
 
 | # | Title | Type | Blocked by | User stories |
 |---|-------|------|------------|--------------|
@@ -14,8 +14,16 @@ Dependency-ordered vertical slices for [docs/prd/eport-v1.md](../docs/prd/eport-
 | 08 | [Account queue + rotation](08-account-queue-rotation.md) | AFK | 03 | 58–66 |
 | 09 | [Config wizard + flag equivalents](09-config-wizard-flag-equivalents.md) | AFK | 01, 02 | 46–56, 92 |
 | 10 | [Service install (Windows + macOS)](10-service-install-windows-macos.md) | AFK | 05 | 79–84 |
-| 11 | [Multimodal, status polish, CLI-HELP parity](11-multimodal-status-cli-help-polish.md) | HITL | 05, 06, 07, 08, 09 | 37–38, 71–78, 4–5 |
+| 11 | [Codex Agent tool streams](11-codex-agent-tool-streams.md) | AFK | 04, 07 | Agent parity 1, 3–5, 15–16, 20 |
+| 12 | [Codex Agent tool ingress](12-codex-agent-tool-ingress.md) | AFK | 11 | Agent parity 6, 9–10, 13, 27 |
+| 13 | [Claude Agent tool loop](13-claude-agent-tool-loop.md) | AFK | 06, 11 | Agent parity 2, 11–14, 17–19 |
+| 14 | [Codex reasoning round-trip](14-codex-reasoning-round-trip.md) | AFK | 11 | Agent parity 26–27 |
+| 15 | [Multimodal images both providers](15-multimodal-images-both-providers.md) | AFK | 06, 11, 13 | Agent parity 21–25 |
+| 16 | [Agent observability + session](16-agent-observability-session.md) | AFK | 11, 13 | Agent parity 30–32, 36–37 |
+| 17 | [Multimodal, status polish, CLI-HELP parity](17-multimodal-status-cli-help-polish.md) | HITL | 05, 06, 07, 08, 09, **11, 12, 13, 15** | 37–38, 71–78, 4–5, 41–44 |
 
-**Legend:** AFK = implement and verify without human interaction. HITL = includes manual Cursor smoke test checklist (slice 11).
+**Legend:** AFK = implement and verify without human interaction. HITL = includes manual Cursor smoke test checklist (slice 17).
 
-**Suggested grab order:** 01 → 02 → 03 → 04 → 05 and 06 in parallel after 04 → 07, 08, 09 in parallel where unblocked → 10 → 11.
+**Suggested grab order:** 01 → 02 → 03 → 04 → 05 and 06 in parallel after 04 → 07, 08, 09 in parallel where unblocked → **11 → 12, 13 → 14 → 15 → 16** → 10 → 17.
+
+**Agent parity detail:** [cursor-agent-parity-issues.md](cursor-agent-parity-issues.md) · PRD [cursor-agent-parity.md](../prd/cursor-agent-parity.md)

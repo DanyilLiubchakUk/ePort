@@ -11,7 +11,7 @@ Implement `GET /v1/models` on the edge router: aggregate models from all logged-
 - [ ] Unknown model routing errors point users to catalog for correct custom model ids
 - [ ] API key gate consistent with other edge routes on public tunnels
 - [ ] Integration test with mocked upstream catalog responses returns expected OpenAI model list shape
-- [ ] `eport status` shows catalog age and model count per provider when stale (minimal stub ok until slice 11 polish)
+- [ ] `eport status` shows catalog age and model count per provider when stale (minimal stub ok until slice 17 polish)
 
 ## Blocked by
 - ISSUES/03-codex-hybrid-auth-login-status.md

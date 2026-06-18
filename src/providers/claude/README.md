@@ -10,7 +10,7 @@ Provider boundary for Claude routes: convert normalized internal request (from C
 
 ## Blocked by / ISSUES slice
 
-[06 — Claude auth, translator, dual routing](../../docs/ISSUES/06-claude-auth-translator-dual-routing.md); multimodal edges in [11](../../docs/ISSUES/11-multimodal-status-cli-help-polish.md).
+[06 — Claude auth, translator, dual routing](../../docs/ISSUES/06-claude-auth-translator-dual-routing.md); Agent tools in [13](../../docs/ISSUES/13-claude-agent-tool-loop.md); multimodal images in [15](../../docs/ISSUES/15-multimodal-images-both-providers.md); polish in [17](../../docs/ISSUES/17-multimodal-status-cli-help-polish.md).
 
 ## Notes
 

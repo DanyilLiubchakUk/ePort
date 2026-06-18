@@ -31,14 +31,14 @@ Stable session identity across related requests so upstream providers can reuse 
 How much internal reasoning a model uses. **Codex** levels include `minimal`, `low`, `medium`, `high`, `xhigh`. **Claude** uses Anthropic-native levels only (see **Provider effort levels**). In Cursor flows, effort is set by the client in the request body or encoded in the model name suffix; proxies strip suffixes and forward provider-appropriate effort upstream. See **Effort precedence** and [docs/prd/eport-v1.md](./docs/prd/eport-v1.md). On Codex routes, **encrypted reasoning** payloads must pass through unchanged.
 
 ## Effort precedence
-Locked resolution order for reasoning/thinking effort (**highest wins**). Applies identically on **Codex and Claude routes** — body effort is honored on both when Cursor sends it (grill **Q11**); suffix/config/global apply only when the body omits effort.
+Locked resolution order for reasoning/thinking effort (**highest wins**). Applies identically on **Codex and Claude routes** — body effort is honored on both when Cursor sends it and no model suffix already fixed the effort.
 
-1. **Request body** — Codex: `reasoning.effort`, `reasoning_effort`, `reasoning`. Claude: same OpenAI-shaped fields plus native equivalents (`thinking`, `thinking.budget_tokens`, Anthropic effort fields) on the Messages translation path.
-2. **Model suffix** — concatenated effort token on client model string.
+1. **Model suffix** — concatenated effort token on client model string.
+2. **Request body** — Codex: `reasoning.effort`, `reasoning_effort`, `reasoning`. Claude: same OpenAI-shaped fields plus native equivalents (`thinking`, `thinking.budget_tokens`, Anthropic effort fields) on the Messages translation path.
 3. **Per-model default** — **default effort profile** in `~/.eport/config`.
 4. **Global default** — fallback when nothing else is set.
 
-Body beats suffix even when both are present (e.g. `gpt-5.5xhigh` + body `medium` → `medium`). On Claude routes, OpenAI-style body labels translate to Anthropic-native upstream values (never `xhigh`). Fast tier uses a separate Codex-only stack (body `service_tier` → `-fast` suffix → config → global). See [docs/prd/eport-v1.md](./docs/prd/eport-v1.md).
+Suffix beats body when both are present (e.g. `gpt-5.5xhigh` + body `medium` → `xhigh`). On Claude routes, OpenAI-style body labels translate to Anthropic-native upstream values (never `xhigh`). Fast tier uses a separate Codex-only stack: `-fast` suffix first, then global/session fast force overrides, then request body `service_tier`, then per-model config. See [docs/prd/eport-v1.md](./docs/prd/eport-v1.md).
 
 ## Encrypted reasoning
 Upstream reasoning delivered in encrypted form (`reasoning.encrypted_content`). The proxy forwards these payloads without decoding or re-encoding so Cursor can consume Codex reasoning. **v1** must-have for Codex.
@@ -50,13 +50,16 @@ Maximum number of simultaneous upstream Codex requests the proxy will send; addi
 Priority queue / accelerated inference tier for **Codex upstream only** — not available on Claude subscription routes. Often expressed as model suffix (`-fast`, `-extra`), request `service_tier`, or upstream value `priority` (Codex naming). Claude model strings may encode reasoning effort but never a fast/speed tier suffix.
 
 ## Tunnel
-A mechanism exposing a local proxy on a public HTTPS URL so Cursor's cloud backend can reach it. `eport up` defaults to a **named Cloudflare tunnel**; other modes are selectable via CLI flags (see **Tunnel mode**).
+A mechanism exposing a local proxy on a public HTTPS URL so Cursor's cloud backend can reach it. `eport up` defaults to a **ngrok static-domain tunnel**; other modes are selectable via CLI flags (see **Tunnel mode**).
+
+## ngrok tunnel
+A persistent ngrok tunnel bound to a saved static domain (e.g. `name.ngrok-free.app`) via a ngrok account and authtoken. Default for `eport up`; survives restarts and gives a stable public URL for Cursor configuration without requiring a user-owned domain.
 
 ## Named tunnel
-A persistent Cloudflare tunnel bound to a fixed hostname (e.g. `eport.example.com`) via a Cloudflare account and tunnel token. Default for `eport up`; survives restarts and gives a stable public URL for Cursor configuration.
+A persistent Cloudflare tunnel bound to a fixed hostname (e.g. `eport.example.com`) via a Cloudflare account and tunnel token. Optional alternative to ngrok; survives restarts and gives a stable public URL for Cursor configuration.
 
 ## Tunnel mode
-How `eport up` exposes the local proxy publicly. Values: **named** (default — persistent Cloudflare named tunnel), **quick** (ephemeral Cloudflare quick tunnel for ad-hoc testing), **none** (no tunnel — local proxy only; user supplies a public URL manually, e.g. VPS or other forwarder). Selectable via CLI flags for experimentation.
+How `eport up` exposes the local proxy publicly. Values: **ngrok** (default — persistent ngrok static-domain tunnel), **named** (persistent Cloudflare named tunnel), **quick** (ephemeral Cloudflare quick tunnel for ad-hoc testing), **none** (no tunnel — local proxy only; user supplies a public URL manually). Selectable via CLI flags for experimentation.
 
 ## Service mode
 OS-level auto-start so the proxy and tunnel run at login/boot without an open terminal. **v1** includes install/uninstall via CLI: `eport service install`, `eport service uninstall`. **Windows:** scheduled task (schtasks pattern from Firzus codex-cursor-proxy). **macOS:** launchd user agent plist.
@@ -83,7 +86,7 @@ Guided `eport config` flow when invoked without flags: **provider-aware** radio-
 The exact `eport config …` one-liner printed after **interactive config** (and usable anytime as an equivalent to the wizard). Lets users rerun or script the same settings without repeating the guided flow.
 
 ## Default effort profile
-Per bare-model default applied when the client sends no body effort/thinking fields and no suffix (e.g. bare `gpt-5.5` → `xhigh`; bare Claude Opus → `high` or `max`). Precedence (highest wins): request body effort/thinking (Q11) → explicit suffix → this profile → global default. Stored values must be **provider-appropriate** (Codex tokens on Codex models; Anthropic-native levels on Claude models). Saved per model in the **config profile** via `eport config model <bare-model> --effort <level>` or **interactive config**; `eport up` session flags can override fast tier for one run without changing saved config. See [docs/prd/eport-v1.md](./docs/prd/eport-v1.md).
+Per bare-model default applied when the client sends no body effort/thinking fields and no suffix (e.g. bare `gpt-5.5` → `xhigh`; bare Claude Opus → `high` or `max`). Precedence (highest wins): explicit suffix → request body effort/thinking → this profile → global default. Stored values must be **provider-appropriate** (Codex tokens on Codex models; Anthropic-native levels on Claude models). Saved per model in the **config profile** via `eport config model <bare-model> --effort <level>` or **interactive config**; `eport up` session flags can override fast tier for one run without changing saved config. See [docs/prd/eport-v1.md](./docs/prd/eport-v1.md).
 
 ## Global fast override
 A setting that forces `service_tier: priority` (Codex fast mode) on every request, regardless of model suffix or client body. Saved in the **config profile** via `eport config` flags or **interactive config**; `eport up --fast` applies it for one run only. Used to avoid per-request suffix parsing and to keep fast tier consistent across all Codex routes.
@@ -92,7 +95,7 @@ A setting that forces `service_tier: priority` (Codex fast mode) on every reques
 Provider-specific vocabularies for reasoning/thinking effort. **Codex:** `minimal`, `low`, `medium`, `high`, `xhigh` (concatenated suffix and config). **Claude:** Anthropic-native set only — e.g. `low`, `medium`, `high`, `max` per current Messages API (no `xhigh`; do not map Codex tokens onto Claude). Interactive config and `eport config model --effort` validate against the model's provider. See [docs/prd/eport-v1.md](./docs/prd/eport-v1.md).
 
 ## Proxy API key
-Cryptographically random secret ePort generates and stores in `~/.eport/config` for Cursor to send as the OpenAI API key on the custom Base URL. Auto-created on first `eport up` or `eport init` if none exists. **Required** when the tunnel is public (named or quick); **optional** for `--tunnel none` (local-only). CLI: `eport api-key show` (display current key), `eport api-key rotate` (new key, old key invalid immediately, print new Cursor paste block). Printed in the copy-paste block from `eport up` alongside Base URL and Verify hint.
+Cryptographically random secret ePort generates and stores in `~/.eport/config` for Cursor to send as the OpenAI API key on the custom Base URL. Auto-created on first `eport up` or `eport init` if none exists. **Required** when the tunnel is public (ngrok, named, or quick); **optional** for `--tunnel none` (local-only). CLI: `eport api-key show` (display current key), `eport api-key rotate` (new key, old key invalid immediately, print new Cursor paste block). Printed in the copy-paste block from `eport up` alongside Base URL and Verify hint.
 
 ## Edge protocol
 The OpenAI-compatible wire format Cursor sends to ePort on the public HTTPS endpoint. Cursor may use **`POST /v1/chat/completions`** (Chat Completions) or **`POST /v1/responses`** (Responses API) depending on client version and flow. **Claude path B (locked):** ePort accepts **both** shapes on Claude-routed models, normalizes internally, and translates upstream to the **Anthropic Messages API**. Codex routes prefer Responses-native passthrough where the wire format matches. See [docs/prd/eport-v1.md](./docs/prd/eport-v1.md) (Claude edge protocol).
@@ -108,3 +111,45 @@ ePort is not locked to a single language or runtime. Components may use differen
 
 ## Distribution
 How users install ePort. **v1:** npm registry — global install (`npm i -g eport`) or one-shot run (`bunx eport`); published as a free public npm package. **Standalone binaries** (macOS app, Windows `.exe`) deferred until a Tauri/Electron desktop app or first stable release.
+
+## ePort Calculated Usage
+Consumed Codex or Claude usage measured by ePort from proxied requests and written as local ccusage-shaped data for eUsage to read. Rolls into existing Codex and Claude provider views — not a separate AI provider.
+
+- Use when: Talking about token and estimated-cost totals from Cursor traffic routed through ePort.
+- Do not use for: Provider quota percentages, raw request logs, or native CLI-only usage that never passed through ePort.
+- Related terms: Provider account fingerprint, Usage data identity, Daily usage snapshot.
+
+## Usage data identity
+Stable key eUsage uses to upsert one cumulative daily usage row instead of appending duplicates. Format: `eport:<provider>:<providerAccountFingerprint>:daily:<YYYY-MM-DD>`.
+
+- Use when: Talking about deduplication across multiple ePort syncs or desktop refreshes within the same reporting day.
+- Do not use for: Individual request ids, upstream `responseId`, or developer device ids.
+- Related terms: ePort Calculated Usage, Daily usage snapshot, Provider account fingerprint.
+
+## Daily usage snapshot
+Cumulative token (and optional cost) totals for one provider account on one calendar reporting day. Each new ePort write replaces the previous snapshot for the same **usage data identity**.
+
+- Use when: Talking about what eUsage reads from ePort calculated rows.
+- Do not use for: Per-request increments or provider quota state.
+- Related terms: ePort Calculated Usage, Usage data identity, Local consumed usage (eUsage).
+
+## Provider account fingerprint
+Privacy-safe identifier for one subscription account in ePort's **account queue**. Groups calculated usage so eUsage multi-account features map correctly.
+
+- Use when: ePort records which Codex or Claude account served a proxied request.
+- Do not use for: Raw auth tokens, email, or the developer's eUsage label.
+- Related terms: Account queue, Usage data identity, ePort Calculated Usage.
+
+## Native usage tree
+The provider-local directory ccusage already scans for session JSONL. ePort uses the **default native home** (`~/.codex` / `~/.claude`): native CLI traffic uses the normal layout (`sessions/`, `projects/…`); ePort-proxied traffic uses **per-account partitions** under that home (e.g. `~/.codex/eport-accounts/<fingerprint>/`).
+
+- Use when: Talking about where ePort Calculated Usage is persisted for eUsage to discover native and ePort account-partitioned usage.
+- Do not use for: ePort config (`~/.eport/config`), or the `authPath` used only for upstream credentials.
+- Related terms: ePort Calculated Usage, Provider account fingerprint, Account queue.
+
+## ePort account partition
+A per-subscription directory under the native provider home where ePort writes ccusage-compatible JSONL for proxied requests only, keyed by **provider account fingerprint**.
+
+- Use when: Splitting ePort Calculated Usage across multiple queue accounts on one machine.
+- Do not use for: Native CLI session logs in `sessions/` or `projects/`.
+- Related terms: Native usage tree, Provider account fingerprint, Account queue.

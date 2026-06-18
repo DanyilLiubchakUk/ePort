@@ -10,7 +10,7 @@ Command handlers for `up`, `init`, `status`, `auth`, `accounts`, `api-key`, `con
 
 ## Blocked by / ISSUES slice
 
-[01 — CLI skeleton, config store, init, api-key](../../docs/ISSUES/01-cli-skeleton-config-init-api-key.md); help text parity in [11 — multimodal, status, CLI-HELP polish](../../docs/ISSUES/11-multimodal-status-cli-help-polish.md).
+[01 — CLI skeleton, config store, init, api-key](../../docs/ISSUES/01-cli-skeleton-config-init-api-key.md); help text parity in [17 — multimodal, status, CLI-HELP polish](../../docs/ISSUES/17-multimodal-status-cli-help-polish.md).
 
 ## Notes
 

@@ -8,6 +8,7 @@
   },
   "files": [
     "bin",
+    "docs/CLI-HELP.md",
     "src"
   ],
   "scripts": {

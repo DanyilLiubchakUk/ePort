@@ -5,11 +5,19 @@ export interface ParsedArgv {
   subcommand?: string;
   rest: string[];
   session: SessionFlags;
+  port?: number;
+  token?: string;
+  hostname?: string;
+  url?: string;
+  label?: string;
+  effort?: string;
+  configFast?: "on" | "off";
   help: boolean;
   version: boolean;
+  json: boolean;
 }
 
-const TUNNEL_MODES = new Set<TunnelMode>(["named", "quick", "none"]);
+const TUNNEL_MODES = new Set<TunnelMode>(["ngrok", "named", "quick", "none"]);
 
 function isFlag(token: string): boolean {
   return token.startsWith("-");
@@ -24,30 +32,56 @@ export function parseArgv(argv: string[]): ParsedArgv {
   const positional: string[] = [];
   let help = false;
   let version = false;
+  let json = false;
+  let port: number | undefined;
+  let tunnelToken: string | undefined;
+  let hostname: string | undefined;
+  let url: string | undefined;
+  let label: string | undefined;
+  let effort: string | undefined;
+  let configFast: "on" | "off" | undefined;
 
   for (let i = 0; i < argv.length; i += 1) {
-    const token = argv[i];
+    const arg = argv[i];
 
-    if (token === "-h" || token === "--help") {
+    if (arg === "-h" || arg === "--help") {
       help = true;
       continue;
     }
-    if (token === "-V" || token === "--version") {
+    if (arg === "-V" || arg === "--version") {
       version = true;
       continue;
     }
-    if (token === "--verbose") {
+    if (arg === "--json") {
+      json = true;
+      continue;
+    }
+    if (arg === "--verbose") {
       session.verbose = true;
       continue;
     }
-    if (token === "--fast") {
+    if (arg === "--fast") {
+      const value = argv[i + 1];
+      if (value === "on" || value === "off") {
+        i += 1;
+        configFast = value;
+        continue;
+      }
       session.fast = true;
       continue;
     }
-    if (token === "--tunnel") {
+    if (arg === "--effort") {
       const value = argv[++i];
       if (!value || isFlag(value)) {
-        throw new Error("--tunnel requires a mode: named, quick, or none");
+        throw new Error("--effort requires a level");
+      }
+      effort = value;
+      continue;
+    }
+    if (arg === "--tunnel") {
+      const value = argv[++i];
+      if (!value || isFlag(value)) {
+        throw new Error("--tunnel requires a mode: ngrok, named, quick, or none");
       }
       const mode = parseTunnelMode(value);
       if (!mode) {
@@ -56,8 +90,52 @@ export function parseArgv(argv: string[]): ParsedArgv {
       session.tunnel = mode;
       continue;
     }
+    if (arg === "--port") {
+      const value = argv[++i];
+      if (!value || isFlag(value)) {
+        throw new Error("--port requires a number");
+      }
+      const parsedPort = Number.parseInt(value, 10);
+      if (!Number.isFinite(parsedPort) || parsedPort < 1 || parsedPort > 65535) {
+        throw new Error(`invalid port: ${value}`);
+      }
+      port = parsedPort;
+      continue;
+    }
+    if (arg === "--token") {
+      const value = argv[++i];
+      if (!value || isFlag(value)) {
+        throw new Error("--token requires a value");
+      }
+      tunnelToken = value;
+      continue;
+    }
+    if (arg === "--hostname") {
+      const value = argv[++i];
+      if (!value || isFlag(value)) {
+        throw new Error("--hostname requires a value");
+      }
+      hostname = value;
+      continue;
+    }
+    if (arg === "--url") {
+      const value = argv[++i];
+      if (!value || isFlag(value)) {
+        throw new Error("--url requires a value");
+      }
+      url = value;
+      continue;
+    }
+    if (arg === "--label") {
+      const value = argv[++i];
+      if (!value || isFlag(value)) {
+        throw new Error("--label requires a value");
+      }
+      label = value;
+      continue;
+    }
 
-    positional.push(token);
+    positional.push(arg);
   }
 
   const [command, subcommand, ...rest] = positional;
@@ -67,7 +145,15 @@ export function parseArgv(argv: string[]): ParsedArgv {
     subcommand,
     rest,
     session,
+    port,
+    token: tunnelToken,
+    hostname,
+    url,
+    label,
+    effort,
+    configFast,
     help,
     version,
+    json,
   };
 }

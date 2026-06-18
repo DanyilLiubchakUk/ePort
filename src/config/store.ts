@@ -6,11 +6,12 @@ import { getConfigPath, getEportHome } from "./paths.ts";
 import {
   emptyConfigProfile,
   type ConfigProfile,
+  type ModelDefaults,
   type TunnelMode,
 } from "./types.ts";
 
 function isTunnelMode(value: unknown): value is TunnelMode {
-  return value === "named" || value === "quick" || value === "none";
+  return value === "ngrok" || value === "named" || value === "quick" || value === "none";
 }
 
 function normalizeProfile(raw: unknown): ConfigProfile {
@@ -28,6 +29,10 @@ function normalizeProfile(raw: unknown): ConfigProfile {
       data.modelDefaults && typeof data.modelDefaults === "object"
         ? (data.modelDefaults as ConfigProfile["modelDefaults"])
         : base.modelDefaults,
+    globalDefaultEffort:
+      typeof data.globalDefaultEffort === "string"
+        ? data.globalDefaultEffort
+        : base.globalDefaultEffort,
     globalFastOverride:
       typeof data.globalFastOverride === "boolean"
         ? data.globalFastOverride
@@ -46,6 +51,19 @@ function normalizeProfile(raw: unknown): ConfigProfile {
                 : undefined,
           }
         : base.tunnel,
+    ngrok:
+      data.ngrok && typeof data.ngrok === "object"
+        ? {
+            authtoken:
+              typeof (data.ngrok as Record<string, unknown>).authtoken === "string"
+                ? ((data.ngrok as Record<string, unknown>).authtoken as string)
+                : undefined,
+            url:
+              typeof (data.ngrok as Record<string, unknown>).url === "string"
+                ? ((data.ngrok as Record<string, unknown>).url as string)
+                : undefined,
+          }
+        : base.ngrok,
   };
 }
 
@@ -80,14 +98,33 @@ export class ConfigStore {
   save(partial: Partial<ConfigProfile>): ConfigProfile {
     mkdirSync(this.eportHome, { recursive: true });
     const current = this.load();
+    const modelDefaults = { ...current.modelDefaults };
+    if (partial.modelDefaults) {
+      for (const [bareModelId, defaults] of Object.entries(partial.modelDefaults)) {
+        modelDefaults[bareModelId] = {
+          ...modelDefaults[bareModelId],
+          ...defaults,
+        };
+      }
+    }
+
     const next: ConfigProfile = {
       ...current,
       ...partial,
-      modelDefaults: partial.modelDefaults ?? current.modelDefaults,
+      modelDefaults,
       tunnel: partial.tunnel ? { ...current.tunnel, ...partial.tunnel } : current.tunnel,
+      ngrok: partial.ngrok ? { ...current.ngrok, ...partial.ngrok } : current.ngrok,
     };
     writeFileSync(this.configPath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
     return next;
+  }
+
+  setModelDefault(bareModelId: string, defaults: ModelDefaults): ConfigProfile {
+    return this.save({
+      modelDefaults: {
+        [bareModelId]: defaults,
+      },
+    });
   }
 
   ensureApiKey(): ConfigProfile {

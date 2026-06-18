@@ -20,7 +20,7 @@ Root of the ePort v1 implementation: local OpenAI-compatible proxy that routes C
 
 ## Build order
 
-Implement in dependency order per [docs/ISSUES/README.md](../docs/ISSUES/README.md): 01 → 02 → 03 → 04 → 05/06 → 07/08/09 → 10 → 11.
+Implement in dependency order per [docs/ISSUES/README.md](../docs/ISSUES/README.md): 01 → 02 → 03 → 04 → 05/06 → 07/08/09 → 11–16 → 10 → 17.
 
 ## Notes
 

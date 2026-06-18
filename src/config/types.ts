@@ -1,4 +1,4 @@
-export type TunnelMode = "named" | "quick" | "none";
+export type TunnelMode = "ngrok" | "named" | "quick" | "none";
 
 export interface ModelDefaults {
   effort?: string;
@@ -10,12 +10,19 @@ export interface NamedTunnelConfig {
   hostname?: string;
 }
 
+export interface NgrokTunnelConfig {
+  authtoken?: string;
+  url?: string;
+}
+
 export interface ConfigProfile {
   proxyApiKey: string;
   modelDefaults: Record<string, ModelDefaults>;
+  globalDefaultEffort?: string;
   globalFastOverride: boolean;
   tunnelMode: TunnelMode;
   tunnel: NamedTunnelConfig;
+  ngrok: NgrokTunnelConfig;
 }
 
 export interface SessionFlags {
@@ -29,7 +36,8 @@ export function emptyConfigProfile(): ConfigProfile {
     proxyApiKey: "",
     modelDefaults: {},
     globalFastOverride: false,
-    tunnelMode: "named",
+    tunnelMode: "ngrok",
     tunnel: {},
+    ngrok: {},
   };
 }

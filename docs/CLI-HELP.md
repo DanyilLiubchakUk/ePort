@@ -11,7 +11,7 @@ These flags apply to `eport up` and other run commands where noted.
 ```
 GLOBAL FLAGS
 
-  --tunnel <mode>    Tunnel mode: named (default), quick, or none
+  --tunnel <mode>    Tunnel mode: ngrok (default), named, quick, or none
   --fast             Force Codex priority (fast) tier for this session
   --verbose          Verbose logging (request details, tunnel output)
 
@@ -34,7 +34,7 @@ DESCRIPTION
   ePort is a local OpenAI-compatible proxy for Cursor (and other clients).
   It forwards requests to ChatGPT/Codex and Claude Max using subscription
   auth — no metered API keys. Cursor requires a public HTTPS URL; ePort
-  exposes one via Cloudflare tunnel (named by default).
+  exposes one via ngrok or Cloudflare tunnel (ngrok by default).
 
 COMMANDS
   up                 Start the proxy and tunnel (default workflow)
@@ -44,7 +44,7 @@ COMMANDS
   accounts           Manage multi-account queues (list, add, switch, reorder)
   api-key            Show or rotate the proxy API key for Cursor
   config             Set model defaults and global options
-  tunnel             Configure Cloudflare tunnel (named or quick)
+  tunnel             Configure ngrok or Cloudflare tunnel
   service            Install and control background service (macOS/Windows)
 
 EXAMPLES
@@ -53,13 +53,18 @@ EXAMPLES
   eport auth login
   eport api-key show
   eport config
-  eport tunnel setup named
+  eport tunnel setup ngrok
   eport service install
 
 NEXT STEPS
-  New install? Run:  eport init  →  eport auth login  →  eport config  →  eport tunnel setup named  →  eport up
+  New install? Run:  eport init  →  eport auth login  →  eport config  →  eport tunnel setup ngrok  →  eport up
   Then paste the printed block into Cursor → Settings → Models → OpenAI.
-  See README.md for Cloudflare token/hostname setup and Cursor custom models.
+  See README.md for ngrok/static-domain setup and Cursor custom models.
+
+LOCAL CHECKOUT TIP
+  Developing from this repo? Add an alias so eport uses local source:
+  alias eport='bun run /path/to/ePort/src/cli/index.ts'
+  Then future commands can be short, e.g. eport up
 ```
 
 ---
@@ -75,7 +80,7 @@ SYNOPSIS
 
 DESCRIPTION
   Starts the local OpenAI-compatible HTTP server and connects the configured
-  Cloudflare tunnel (named mode by default). Prints a copy-paste block with
+  configured public tunnel (ngrok mode by default). Prints a copy-paste block with
   Base URL, API key, and suggested custom models for Cursor.
 
   On first run (or if no key exists), auto-generates a cryptographically
@@ -86,13 +91,14 @@ DESCRIPTION
   override, tunnel mode). Session flags override without saving.
 
 OPTIONS
-  --tunnel <mode>    named (default) | quick | none
+  --tunnel <mode>    ngrok (default) | named | quick | none
   --fast             Force Codex priority tier for this session only
   --verbose          Verbose request and tunnel logs
   --port <n>         Local listen port (default: 8787)
 
 EXAMPLES
   eport up
+  eport up --tunnel ngrok
   eport up --tunnel quick
   eport up --tunnel named --fast
   eport up --tunnel none --port 8787
@@ -103,12 +109,12 @@ NEXT STEPS
   3. Paste Base URL (must end with /v1), enter API key, click Verify.
   4. Add custom models (e.g. gpt-5.5, gpt-5.5xhigh-fast, opus-4.8max).
   5. Optional: eport service install  to keep running after you close the terminal.
-     Use named tunnel only — quick tunnel URLs change on restart and break Cursor.
+     Use ngrok or named tunnel only — quick tunnel URLs change on restart and break Cursor.
 
   Discover models: curl -H "Authorization: Bearer $(eport api-key show)" <base>/models
   API key required for public tunnels; optional for --tunnel none.
 
-  If tunnel fails: eport tunnel setup named  (need token + hostname from Cloudflare).
+  If tunnel fails: eport tunnel setup ngrok  (need authtoken + static domain).
   If auth fails: eport auth login
 ```
 
@@ -142,7 +148,7 @@ EXAMPLES
 NEXT STEPS
   eport auth login
   eport config
-  eport tunnel setup named
+  eport tunnel setup ngrok
   eport up  — prints Cursor paste block (Base URL + API key + Verify hint)
 ```
 
@@ -164,7 +170,7 @@ DESCRIPTION
 
   Auto-created on first eport up or eport init if missing.
 
-  Required when tunnel is public (named or quick). Optional for local-only
+  Required when tunnel is public (ngrok, named, or quick). Optional for local-only
   eport up --tunnel none.
 
 SUBCOMMANDS
@@ -209,7 +215,7 @@ EXAMPLES
 NEXT STEPS
   Proxy not running?  eport up  or  eport service start
   Auth expired?       eport auth login
-  Wrong tunnel URL?   eport tunnel setup named  (named) or re-run with --tunnel quick
+  Wrong tunnel URL?   eport tunnel setup ngrok  (stable) or re-run with --tunnel quick
   Update Cursor?      Use the tunnel URL shown here + /v1 as Base URL
 ```
 
@@ -248,7 +254,7 @@ EXAMPLES
 NEXT STEPS
   eport auth status     — confirm both providers if you use dual routing
   eport config          — set default effort per model
-  eport tunnel setup named
+  eport tunnel setup ngrok
   eport up              — start proxy and paste block into Cursor
 ```
 
@@ -572,18 +578,54 @@ DESCRIPTION
 OPTIONS
   --effort <level>   Set global or per-model effort (with model subcommand)
   --fast on|off      Global fast override (Codex priority on every request)
-  --tunnel <mode>    Default tunnel mode: named | quick | none
+  --tunnel <mode>    Default tunnel mode: ngrok | named | quick | none
 
 EXAMPLES
   eport config
   eport config --fast on
-  eport config --tunnel named
+  eport config --tunnel ngrok
   eport config model gpt-5.5 --effort xhigh
 
 NEXT STEPS
   Copy the printed "Flag equivalent" line to script or repeat settings.
-  eport tunnel setup named  if not done yet
+  eport tunnel setup ngrok  if not done yet
   eport up
+```
+
+---
+
+## `eport tunnel setup ngrok`
+
+```
+NAME
+  eport tunnel setup ngrok — Configure persistent ngrok tunnel
+
+SYNOPSIS
+  eport tunnel setup ngrok [options]
+
+DESCRIPTION
+  Saves a ngrok authtoken and static domain URL to config. This is the
+  default stable tunnel mode for new ePort installs.
+
+  You create a free ngrok account, reserve a static domain in the ngrok
+  dashboard, then paste the authtoken and domain here. ePort starts ngrok
+  with NGROK_AUTHTOKEN at runtime and does not mutate global ngrok config.
+
+OPTIONS
+  --token <token>    ngrok authtoken; prompts if omitted
+  --hostname <url>   Static ngrok URL (e.g. https://name.ngrok-free.app);
+                     prompts if omitted
+  --url <url>        Alias for --hostname
+
+EXAMPLES
+  eport tunnel setup ngrok
+  eport tunnel setup ngrok --token 2abc... --url name.ngrok-free.app
+
+NEXT STEPS
+  1. Install ngrok from https://ngrok.com/download.
+  2. Reserve a static domain in ngrok dashboard.
+  3. eport up  — should print https://<domain>/v1
+  4. Paste into Cursor Settings → Models → OpenAI Base URL.
 ```
 
 ---
@@ -648,7 +690,7 @@ EXAMPLES
 
 NEXT STEPS
   eport up  — copy the new URL into Cursor Base URL each time it changes.
-  For stable URL: eport tunnel setup named
+  For stable URL: eport tunnel setup ngrok
 ```
 
 ---
@@ -660,26 +702,29 @@ NAME
   eport tunnel setup — Interactive tunnel wizard
 
 SYNOPSIS
-  eport tunnel setup [named|quick] [options]
+  eport tunnel setup [ngrok|named|quick] [options]
 
 DESCRIPTION
-  Guided setup: choose named (stable hostname) or quick (random URL).
-  For named, prompts for tunnel token and hostname and saves to config.
-  Explains where to find token vs hostname in the Cloudflare dashboard.
+  Guided setup: choose ngrok (stable static domain), named Cloudflare
+  (stable hostname), or quick Cloudflare (random URL).
+  Prompts for the required token/domain values and saves them to config.
 
 ARGUMENTS
+  ngrok              Skip menu; run ngrok tunnel setup
   named              Skip menu; run named tunnel setup
   quick              Skip menu; enable quick tunnel mode
 
 EXAMPLES
   eport tunnel setup
+  eport tunnel setup ngrok
   eport tunnel setup named
   eport tunnel setup quick
 
 NEXT STEPS
+  ngrok: eport up  → paste https://<ngrok-domain>/v1 into Cursor.
   Named: eport up  → paste https://<hostname>/v1 into Cursor.
   Quick: eport up  → update Cursor Base URL whenever the URL changes.
-  eport service install  — optional background service; named tunnel only.
+  eport service install  — optional background service; ngrok or named only.
 ```
 
 ---
@@ -697,7 +742,7 @@ DESCRIPTION
   Installs OS-level auto-start so proxy + tunnel run at login without a
   terminal. Windows: scheduled task (schtasks). macOS: launchd user agent.
 
-  Requires prior auth and tunnel config for named mode.
+  Requires prior auth and tunnel config for ngrok or named mode.
 
   Do not install the service when default tunnel mode is quick — the tunnel
   URL changes on every restart and Cursor Base URL will break silently.
@@ -852,5 +897,5 @@ NEXT STEPS
 - Every command should support `eport <command> --help` (or `eport help <command>`).
 - **NEXT STEPS** sections are user-facing guidance; keep them in help output.
 - Dynamic values in `eport up` / `eport status` (URL, API key, models) are printed at runtime, not in static `--help`.
-- Terminology must match [CONTEXT.md](../CONTEXT.md): named tunnel default, suffix grammar, dual auth, config profile, flag equivalent, account rotation trigger, provider effort levels, proxy API key.
+- Terminology must match [CONTEXT.md](../CONTEXT.md): ngrok tunnel default, suffix grammar, dual auth, config profile, flag equivalent, account rotation trigger, provider effort levels, proxy API key.
 - Account rotation, effort precedence, and model catalog rules must match [docs/prd/eport-v1.md](./prd/eport-v1.md).
